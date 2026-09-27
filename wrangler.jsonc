@@ -1,0 +1,36 @@
+// DiskBytes license server — Cloudflare Worker configuration (wrangler v4).
+//
+// Deploy guide + all secrets setup: README.md. The D1 binding below is the
+// ONLY thing to edit per deployment (database_id). Secrets are set with
+// `wrangler secret put` (never committed):
+//   LICENSE_SIGNING_PRIVATE_KEY  — 64-hex Ed25519 seed (scripts/generate-keypair.mjs)
+//   ADMIN_API_KEY                — admin API bearer (scripts/generate-secret.mjs)
+//   CLIENT_REQUEST_SECRET        — 64-hex HMAC shared with the app client
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "diskbytes-license",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": [],
+  "workers_dev": false,
+  "routes": [
+    // Optional: serve on your own domain (recommended for a stable URL):
+    // { "pattern": "license.diskbytes.app", "custom_domain": true }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "vars": {
+    // Offline grace window baked into every issued token. Keep in sync with
+    // the app's GRACE_DAYS (src-tauri/src/license.rs).
+    "TOKEN_TTL_DAYS": "14"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "diskbytes-license",
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ]
+}
