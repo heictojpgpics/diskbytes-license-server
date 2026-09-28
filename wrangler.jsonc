@@ -12,7 +12,14 @@
   "main": "src/index.ts",
   "compatibility_date": "2025-09-01",
   "compatibility_flags": [],
-  "workers_dev": false,
+  // v2 fix: the deployment URL this whole system points at IS the
+  // workers.dev subdomain (the app's LICENSE_API_BASE). v1 shipped
+  // "false" here, so any redeploy silently DISABLED the hostname —
+  // every request then 404s with Cloudflare "error code: 1042" (the
+  // owner hit exactly this after the first redeploy). Keep true while
+  // serving on workers.dev; switch to false only when you move to the
+  // custom domain (routes below) in the SAME deploy.
+  "workers_dev": true,
   "routes": [
     // Optional: serve on your own domain (recommended for a stable URL):
     // { "pattern": "license.diskbytes.app", "custom_domain": true }

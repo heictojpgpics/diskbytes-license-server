@@ -80,6 +80,14 @@ npx wrangler secret put LICENSE_SIGNING_PRIVATE_KEY   # paste the seed from step
 npx wrangler deploy
 #    → note the URL, e.g. https://diskbytes-license.<your-subdomain>.workers.dev
 #    (recommended: add a custom domain — see §3)
+#
+#    ⚠️ If every request 404s with "error code: 1042" after a deploy:
+#    the workers.dev route for the Worker is disabled. Fix once in the
+#    dashboard (Workers & Pages → diskbytes-license → Settings →
+#    Domains & Routes → enable workers.dev) — and keep
+#    "workers_dev": true in wrangler.jsonc (the repo default) while
+#    serving on the subdomain. Switch it off only in the same deploy
+#    that adds your custom domain.
 
 # 7. Smoke-test
 curl https://<your-worker-url>/v1/health
