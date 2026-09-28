@@ -1,9 +1,10 @@
 /**
- * DiskBytes license server — Worker entry (router).
+ * DiskBytes license server — Worker entry (router), v2.
  *
  * App routes (request-HMAC auth, UA pinned):
- *   POST /v1/activate     bind device + mint token
- *   POST /v1/validate     24 h revalidation + fresh token
+ *   POST /v1/activate     bind device + mint token (rate-limited)
+ *   POST /v1/validate     24 h revalidation + fresh token (full device
+ *                         claim — the v2 fix that stopped fact-wiping)
  *   POST /v1/deactivate   free this device's slot
  *   POST /v1/verify       debug: verify a token against the public key
  *                         (request-HMAC auth; returns the payload only)
@@ -12,7 +13,8 @@
  *   GET  /v1/health       liveness
  *
  * Admin (bearer):
- *   /v1/admin/*           key generation + management (routes/admin.ts)
+ *   /v1/admin/*           key generation + management + lookup +
+ *                         transfer + refund + device census (routes/admin.ts)
  */
 import { handleActivate } from "./routes/activate";
 import { handleValidate } from "./routes/validate";
@@ -21,12 +23,7 @@ import { handleAdmin } from "./routes/admin";
 import { verifyAppRequest } from "./guard";
 import { publicKeyFromSeed, toHex, verifyToken } from "./crypto";
 import type { Env } from "./types";
-
-const json = (status: number, body: object): Response =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json", "cache-control": "no-store" },
-  });
+import { json } from "./routes/shared";
 
 export default {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
@@ -37,7 +34,7 @@ export default {
 
     try {
       if (request.method === "GET" && path === "/v1/health") {
-        return json(200, { ok: true, service: "diskbytes-license", time: Math.floor(Date.now() / 1000) });
+        return json(200, { ok: true, service: "diskbytes-license", version: 2, time: Math.floor(Date.now() / 1000) });
       }
       if (path.startsWith("/v1/admin")) {
         return handleAdmin(env, request, url);

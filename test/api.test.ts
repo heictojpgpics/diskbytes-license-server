@@ -29,12 +29,17 @@ const admin = async (path: string, init?: RequestInit) =>
     ...init,
   }));
 const activate = (key: string, platform: string, hardwareHash: string) =>
-  call(signedRequest("POST", "/v1/activate", { licenseKey: key, hardwareHash, platform, hostname: "DEV-PC", osVersion: "Win 11", appVersion: "0.1.0" }));
+  call(signedRequest("POST", "/v1/activate", {
+    licenseKey: key, hardwareHash, platform,
+    hostname: "DEV-PC", osVersion: "Win 11", appVersion: "0.1.0",
+    compMachine: "1".repeat(64), compVolume: "2".repeat(64), compCpu: "3".repeat(64),
+    cpuBrand: "Intel Core i7", ramMb: 16384, machineModel: "Dell Inc. XPS 15",
+  }));
 const validate = (key: string, platform: string, hardwareHash: string) =>
   call(signedRequest("POST", "/v1/validate", { licenseKey: key, hardwareHash, platform }));
 
 beforeEach(async () => {
-  for (const table of ["devices", "audit_events", "nonce_seen", "licenses"]) { // children first (FK)
+  for (const table of ["devices", "audit_events", "nonce_seen", "rate_buckets", "licenses"]) { // children first (FK)
       await env.DB.prepare(`DELETE FROM ${table}`).run();
     }
 });
@@ -167,9 +172,17 @@ describe("activation lifecycle", () => {
     // The slot is free: a DIFFERENT device can now take it.
     const other = await activate(key, "windows", hw(22));
     expect(other.status).toBe(200);
-    // And the original hardware can register again too (it re-takes the slot).
+    // v2: while the other device holds the slot, the ORIGINAL hardware
+    // is refused (one live row per platform — the partial unique index).
+    // (v1 silently created a second live row here — the race made
+    // concrete; v2's storage invariant forbids it.)
     const again = await activate(key, "windows", hw(21));
-    expect(again.status).toBe(200);
+    expect(again.status).toBe(409);
+    expect(again.body.code).toBe("DEVICE_SLOT_TAKEN");
+    // Once the OTHER device frees it, the original re-registers fine.
+    await call(signedRequest("POST", "/v1/deactivate", { licenseKey: key, hardwareHash: hw(22), platform: "windows" }));
+    const reReg = await activate(key, "windows", hw(21));
+    expect(reReg.status).toBe(200);
   });
 
   it("deactivation on an unregistered device is idempotent-ok", async () => {

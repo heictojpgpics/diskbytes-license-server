@@ -1,7 +1,8 @@
 /**
  * The D1 schema applied to the test database (setup.ts runs this via
- * env.DB.exec on every test file's isolated storage). Keep in sync with
- * migrations/0001_init.sql — the CI typecheck + test run execute both.
+ * env.DB on every test file's isolated storage). Keep in sync with
+ * migrations/0001_init.sql + migrations/0002 — the CI typecheck + test
+ * run execute both.
  */
 export const INITIAL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS licenses (
@@ -15,6 +16,7 @@ CREATE TABLE IF NOT EXISTS licenses (
   note           TEXT,
   issued_at      INTEGER NOT NULL,
   expires_at     INTEGER,
+  source         TEXT,
   created_at     INTEGER NOT NULL,
   updated_at     INTEGER NOT NULL
 );
@@ -30,6 +32,12 @@ CREATE TABLE IF NOT EXISTS devices (
   hostname      TEXT,
   os_version    TEXT,
   app_version   TEXT,
+  comp_machine  TEXT,
+  comp_volume   TEXT,
+  comp_cpu      TEXT,
+  cpu_brand     TEXT,
+  ram_mb        INTEGER,
+  machine_model TEXT,
   activated_at  INTEGER NOT NULL,
   last_seen_at  INTEGER NOT NULL,
   revoked       INTEGER NOT NULL DEFAULT 0
@@ -37,6 +45,7 @@ CREATE TABLE IF NOT EXISTS devices (
 CREATE INDEX IF NOT EXISTS idx_devices_license ON devices(license_id);
 CREATE INDEX IF NOT EXISTS idx_devices_hw      ON devices(hardware_hash);
 CREATE INDEX IF NOT EXISTS idx_devices_live    ON devices(license_id, platform, revoked);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_live_slot ON devices(license_id, platform) WHERE revoked = 0;
 
 CREATE TABLE IF NOT EXISTS audit_events (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,6 +56,7 @@ CREATE TABLE IF NOT EXISTS audit_events (
   hw_prefix  TEXT,
   reason     TEXT,
   ip_hash    TEXT,
+  detail     TEXT,
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_license ON audit_events(license_id);
@@ -57,4 +67,11 @@ CREATE TABLE IF NOT EXISTS nonce_seen (
   seen_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_nonce_seen_at ON nonce_seen(seen_at);
+
+CREATE TABLE IF NOT EXISTS rate_buckets (
+  bucket_key   TEXT PRIMARY KEY,
+  window_start INTEGER NOT NULL,
+  count        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rate_window ON rate_buckets(window_start);
 `;

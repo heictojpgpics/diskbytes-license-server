@@ -1,6 +1,19 @@
 /**
  * D1 query layer — one place per table so route handlers stay protocol
  * logic, and so every query is reviewable against the schema at once.
+ *
+ * v2 hardening notes:
+ *  * `touchDevice` COALESCEs every nullable column — a claim that omits
+ *    a field can never NULL-out stored data (the v1 validate path wiped
+ *    hostname/os_version/app_version on every 24 h revalidation; that
+ *    was the owner-reported "doesn't save hostname" bug).
+ *  * The live-slot rule (1 Windows + 1 macOS per key) is enforced by the
+ *    partial unique index `idx_devices_live_slot` — `insertDevice` and
+ *    `reviveDevice` map its constraint error to the DEVICE_SLOT_TAKEN
+ *    outcome. Storage-level invariant = race-proof by construction
+ *    (v1's SELECT-then-INSERT had a TOCTOU window).
+ *  * `rateConsume` is a single atomic upsert — concurrent requests
+ *    serialize on SQLite's write lock, so counters are exact.
  */
 import type { DeviceClaim } from "./types";
 
@@ -13,6 +26,7 @@ export interface LicenseRow {
   customer_name: string;
   customer_email: string;
   note: string | null;
+  source: string | null;
   issued_at: number;
   expires_at: number | null;
   created_at: number;
@@ -27,6 +41,12 @@ export interface DeviceRow {
   hostname: string | null;
   os_version: string | null;
   app_version: string | null;
+  comp_machine: string | null;
+  comp_volume: string | null;
+  comp_cpu: string | null;
+  cpu_brand: string | null;
+  ram_mb: number | null;
+  machine_model: string | null;
   activated_at: number;
   last_seen_at: number;
   revoked: number;
@@ -41,8 +61,24 @@ export interface AuditRow {
   hw_prefix: string | null;
   reason: string | null;
   ip_hash: string | null;
+  detail: string | null;
   created_at: number;
 }
+
+/** The slot rule says a UNIQUE-constraint failure on the live-slot
+ * index — mapped by the routes to the DEVICE_SLOT_TAKEN contract. */
+export class SlotTakenError extends Error {
+  constructor() {
+    super("device slot taken");
+    this.name = "SlotTakenError";
+  }
+}
+
+const isSlotConstraint = (err: unknown): boolean => {
+  const msg = err instanceof Error ? err.message : String(err);
+  // D1 surfaces SQLite's message: "UNIQUE constraint failed: devices.license_id, devices.platform"
+  return msg.includes("UNIQUE constraint failed") && msg.includes("devices.");
+};
 
 export class Db {
   constructor(private readonly d1: D1Database) {}
@@ -63,7 +99,14 @@ export class Db {
       .first<LicenseRow>();
   }
 
-  licensesPage(offset: number, limit: number): Promise<LicenseRow[]> {
+  licensesPage(offset: number, limit: number, email?: string): Promise<LicenseRow[]> {
+    if (email !== undefined) {
+      return this.d1
+        .prepare("SELECT * FROM licenses WHERE customer_email = ?1 ORDER BY id DESC LIMIT ?2 OFFSET ?3")
+        .bind(email, limit, offset)
+        .all<LicenseRow>()
+        .then((r) => r.results);
+    }
     return this.d1
       .prepare("SELECT * FROM licenses ORDER BY id DESC LIMIT ?1 OFFSET ?2")
       .bind(limit, offset)
@@ -71,7 +114,14 @@ export class Db {
       .then((r) => r.results);
   }
 
-  countLicenses(): Promise<number> {
+  countLicenses(email?: string): Promise<number> {
+    if (email !== undefined) {
+      return this.d1
+        .prepare("SELECT COUNT(*) AS n FROM licenses WHERE customer_email = ?1")
+        .bind(email)
+        .first<{ n: number }>()
+        .then((r) => r?.n ?? 0);
+    }
     return this.d1
       .prepare("SELECT COUNT(*) AS n FROM licenses")
       .first<{ n: number }>()
@@ -85,6 +135,7 @@ export class Db {
     customerName: string;
     customerEmail: string;
     note: string | null;
+    source: string | null;
     issuedAt: number;
     expiresAt: number | null;
     now: number;
@@ -93,8 +144,8 @@ export class Db {
       .prepare(
         `INSERT INTO licenses
            (key_hash, key_last4, tier, status, customer_name, customer_email,
-            note, issued_at, expires_at, created_at, updated_at)
-         VALUES (?1, ?2, ?3, 'active', ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+            note, source, issued_at, expires_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 'active', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
          RETURNING *`,
       )
       .bind(
@@ -104,6 +155,7 @@ export class Db {
         license.customerName,
         license.customerEmail,
         license.note,
+        license.source,
         license.issuedAt,
         license.expiresAt,
         license.now,
@@ -131,6 +183,22 @@ export class Db {
       .then(() => undefined);
   }
 
+  /** Update customer identity (support: email change / name fix). */
+  transferLicense(id: number, name: string, email: string, now: number): Promise<void> {
+    return this.d1
+      .prepare("UPDATE licenses SET customer_name = ?2, customer_email = ?3, updated_at = ?4 WHERE id = ?1")
+      .bind(id, name, email, now)
+      .run()
+      .then(() => undefined);
+  }
+
+  licenseCounts(): Promise<{ tier: string; status: string; n: number }[]> {
+    return this.d1
+      .prepare("SELECT tier, status, COUNT(*) AS n FROM licenses GROUP BY tier, status")
+      .all<{ tier: string; status: string; n: number }>()
+      .then((r) => r.results);
+  }
+
   // ── devices ───────────────────────────────────────────────────────
 
   deviceByLicensePlatformHw(
@@ -139,9 +207,7 @@ export class Db {
     hardwareHash: string,
   ): Promise<DeviceRow | null> {
     return this.d1
-      .prepare(
-        "SELECT * FROM devices WHERE license_id = ?1 AND platform = ?2 AND hardware_hash = ?3",
-      )
+      .prepare("SELECT * FROM devices WHERE license_id = ?1 AND platform = ?2 AND hardware_hash = ?3")
       .bind(licenseId, platform, hardwareHash)
       .first<DeviceRow>();
   }
@@ -151,9 +217,7 @@ export class Db {
     platform: "windows" | "macos",
   ): Promise<DeviceRow[]> {
     return this.d1
-      .prepare(
-        "SELECT * FROM devices WHERE license_id = ?1 AND platform = ?2 AND revoked = 0",
-      )
+      .prepare("SELECT * FROM devices WHERE license_id = ?1 AND platform = ?2 AND revoked = 0")
       .bind(licenseId, platform)
       .all<DeviceRow>()
       .then((r) => r.results);
@@ -167,13 +231,52 @@ export class Db {
       .then((r) => r.results);
   }
 
+  /** Global device census (admin overview; newest first). */
+  devicesPage(offset: number, limit: number): Promise<DeviceRow[]> {
+    return this.d1
+      .prepare(
+        `SELECT * FROM devices ORDER BY last_seen_at DESC, id DESC LIMIT ?1 OFFSET ?2`,
+      )
+      .bind(limit, offset)
+      .all<DeviceRow>()
+      .then((r) => r.results);
+  }
+
+  /** Global device census joined with the license identity (admin). */
+  devicesWithLicense(offset: number, limit: number): Promise<(DeviceRow & { key_last4: string; customer_email: string; customer_name: string; tier: string })[]> {
+    return this.d1
+      .prepare(
+        `SELECT d.*, l.key_last4, l.customer_email, l.customer_name, l.tier
+         FROM devices d JOIN licenses l ON l.id = d.license_id
+         ORDER BY d.last_seen_at DESC, d.id DESC LIMIT ?1 OFFSET ?2`,
+      )
+      .bind(limit, offset)
+      .all<DeviceRow & { key_last4: string; customer_email: string; customer_name: string; tier: string }>()
+      .then((r) => r.results);
+  }
+
+  countDevices(): Promise<number> {
+    return this.d1
+      .prepare("SELECT COUNT(*) AS n FROM devices WHERE revoked = 0")
+      .first<{ n: number }>()
+      .then((r) => r?.n ?? 0);
+  }
+
+  devicesByPlatform(): Promise<{ platform: string; n: number }[]> {
+    return this.d1
+      .prepare("SELECT platform, COUNT(*) AS n FROM devices WHERE revoked = 0 GROUP BY platform")
+      .all<{ platform: string; n: number }>()
+      .then((r) => r.results);
+  }
+
   insertDevice(licenseId: number, claim: DeviceClaim, now: number): Promise<DeviceRow> {
     return this.d1
       .prepare(
         `INSERT INTO devices
            (license_id, platform, hardware_hash, hostname, os_version, app_version,
+            comp_machine, comp_volume, comp_cpu, cpu_brand, ram_mb, machine_model,
             activated_at, last_seen_at, revoked)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 0)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, 0)
          RETURNING *`,
       )
       .bind(
@@ -183,33 +286,90 @@ export class Db {
         claim.hostname ?? null,
         claim.osVersion ?? null,
         claim.appVersion ?? null,
+        claim.compMachine ?? null,
+        claim.compVolume ?? null,
+        claim.compCpu ?? null,
+        claim.cpuBrand ?? null,
+        claim.ramMb ?? null,
+        claim.machineModel ?? null,
         now,
       )
       .first<DeviceRow>()
+      .catch((err: unknown) => {
+        // The partial unique live-slot index fired: another live device
+        // holds this platform slot (race lost, or v1 race duplicate).
+        if (isSlotConstraint(err)) throw new SlotTakenError();
+        throw err;
+      })
       .then((r) => {
         if (!r) throw new Error("insert device returned no row");
         return r;
       });
   }
 
+  /**
+   * Refresh the device row from a claim. v2 contract: NEVER regress a
+   * stored value to NULL — every nullable column COALESCEs, so a claim
+   * that omits facts (older client, partial collection) keeps the last
+   * known good value. This is the fix for the v1 wipe bug.
+   */
   touchDevice(id: number, claim: DeviceClaim, now: number): Promise<void> {
     return this.d1
       .prepare(
-        `UPDATE devices SET last_seen_at = ?2, hostname = ?3, os_version = ?4,
-         app_version = ?5 WHERE id = ?1`,
+        `UPDATE devices SET
+           last_seen_at = ?2,
+           hostname = COALESCE(?3, hostname),
+           os_version = COALESCE(?4, os_version),
+           app_version = COALESCE(?5, app_version),
+           comp_machine = COALESCE(?6, comp_machine),
+           comp_volume = COALESCE(?7, comp_volume),
+           comp_cpu = COALESCE(?8, comp_cpu),
+           cpu_brand = COALESCE(?9, cpu_brand),
+           ram_mb = COALESCE(?10, ram_mb),
+           machine_model = COALESCE(?11, machine_model)
+         WHERE id = ?1`,
       )
-      .bind(id, now, claim.hostname ?? null, claim.osVersion ?? null, claim.appVersion ?? null)
+      .bind(
+        id,
+        now,
+        claim.hostname ?? null,
+        claim.osVersion ?? null,
+        claim.appVersion ?? null,
+        claim.compMachine ?? null,
+        claim.compVolume ?? null,
+        claim.compCpu ?? null,
+        claim.cpuBrand ?? null,
+        claim.ramMb ?? null,
+        claim.machineModel ?? null,
+      )
       .run()
       .then(() => undefined);
   }
 
-  /** Reactivate a revoked-by-support row for the SAME hardware. */
-  reviveDevice(id: number, now: number): Promise<void> {
+  /**
+   * Reactivate a support-reset row for the SAME hardware — atomically
+   * refuses when another live device already holds the platform slot
+   * (the partial unique index is the invariant; the NOT EXISTS
+   * subquery keeps the UPDATE and the index in one serialized step).
+   * Returns the refreshed row, or throws SlotTakenError.
+   */
+  reviveDevice(licenseId: number, id: number, platform: "windows" | "macos", now: number): Promise<DeviceRow> {
     return this.d1
-      .prepare("UPDATE devices SET revoked = 0, last_seen_at = ?2 WHERE id = ?1")
-      .bind(id, now)
-      .run()
-      .then(() => undefined);
+      .prepare(
+        `UPDATE devices SET revoked = 0, last_seen_at = ?3
+         WHERE id = ?4 AND license_id = ?1 AND platform = ?2
+           AND NOT EXISTS (
+             SELECT 1 FROM devices d
+             WHERE d.license_id = ?1 AND d.platform = ?2 AND d.revoked = 0 AND d.id != ?4
+           )
+         RETURNING *`,
+      )
+      .bind(licenseId, platform, now, id)
+      .first<DeviceRow>()
+      .then((r) => {
+        if (!r) throw new SlotTakenError();
+        return r;
+      });
   }
 
   revokeDevice(id: number, now: number): Promise<void> {
@@ -220,18 +380,19 @@ export class Db {
       .then(() => undefined);
   }
 
+  /** Support undo for a device reset (idempotent-safe: same guard as revive). */
+  reviveDeviceById(id: number, now: number): Promise<DeviceRow | null> {
+    return this.d1
+      .prepare("UPDATE devices SET revoked = 0, last_seen_at = ?2 WHERE id = ?1 RETURNING *")
+      .bind(id, now)
+      .first<DeviceRow>();
+  }
+
   deviceById(id: number): Promise<DeviceRow | null> {
     return this.d1
       .prepare("SELECT * FROM devices WHERE id = ?1")
       .bind(id)
       .first<DeviceRow>();
-  }
-
-  countDevices(): Promise<number> {
-    return this.d1
-      .prepare("SELECT COUNT(*) AS n FROM devices WHERE revoked = 0")
-      .first<{ n: number }>()
-      .then((r) => r?.n ?? 0);
   }
 
   // ── audit ─────────────────────────────────────────────────────────
@@ -244,13 +405,14 @@ export class Db {
     hwPrefix?: string | null;
     reason?: string | null;
     ipHash?: string | null;
+    detail?: string | null;
     now: number;
   }): Promise<void> {
     return this.d1
       .prepare(
         `INSERT INTO audit_events
-           (license_id, key_last4, event, platform, hw_prefix, reason, ip_hash, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+           (license_id, key_last4, event, platform, hw_prefix, reason, ip_hash, detail, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`,
       )
       .bind(
         event.licenseId ?? null,
@@ -260,6 +422,7 @@ export class Db {
         event.hwPrefix ?? null,
         event.reason ?? null,
         event.ipHash ?? null,
+        event.detail ?? null,
         event.now,
       )
       .run()
@@ -274,6 +437,23 @@ export class Db {
       .then((r) => r.results);
   }
 
+  /** Retention: drop audit rows older than the horizon (housekeeping). */
+  sweepAudit(now: number, olderThanSeconds: number): Promise<void> {
+    return this.d1
+      .prepare("DELETE FROM audit_events WHERE created_at < ?1")
+      .bind(now - olderThanSeconds)
+      .run()
+      .then(() => undefined);
+  }
+
+  auditCountSince(since: number, event: string): Promise<number> {
+    return this.d1
+      .prepare("SELECT COUNT(*) AS n FROM audit_events WHERE event = ?1 AND created_at >= ?2")
+      .bind(event, since)
+      .first<{ n: number }>()
+      .then((r) => r?.n ?? 0);
+  }
+
   // ── nonce replay defense ──────────────────────────────────────────
 
   /** Returns true when the nonce is fresh (and records it). */
@@ -286,12 +466,41 @@ export class Db {
       .catch(() => false);
   }
 
-  /** Housekeeping: drop nonces older than the request window. */
+  /** Housekeeping: drop nonces + rate buckets older than the window. */
   sweepNonces(now: number, olderThanSeconds: number): Promise<void> {
     return this.d1
       .prepare("DELETE FROM nonce_seen WHERE seen_at < ?1")
       .bind(now - olderThanSeconds)
       .run()
+      .then(() =>
+        this.d1
+          .prepare("DELETE FROM rate_buckets WHERE window_start < ?1")
+          .bind(now - olderThanSeconds - 3_600)
+          .run(),
+      )
       .then(() => undefined);
+  }
+
+  // ── rate limiting (fixed window, atomic upsert) ────────────────────
+
+  /**
+   * Consume one unit of the bucket `key`. Returns false when the limit
+   * for the current window is already exhausted (→ HTTP 429). The
+   * upsert is a single statement — SQLite serializes writers, so the
+   * counter is exact under concurrency.
+   */
+  rateConsume(key: string, limit: number, windowSec: number, now: number): Promise<boolean> {
+    const windowStart = Math.floor(now / windowSec) * windowSec;
+    return this.d1
+      .prepare(
+        `INSERT INTO rate_buckets (bucket_key, window_start, count) VALUES (?1, ?2, 1)
+         ON CONFLICT(bucket_key) DO UPDATE SET
+           count = CASE WHEN window_start = ?2 THEN count + 1 ELSE 1 END,
+           window_start = ?2
+         RETURNING count`,
+      )
+      .bind(key, windowStart)
+      .first<{ count: number }>()
+      .then((r) => (r?.count ?? 1) <= limit);
   }
 }

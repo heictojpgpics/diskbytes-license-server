@@ -6,14 +6,29 @@ analyzer): Cloudflare Worker + D1.
 - **Key registry** — keys are generated here, stored ONLY as SHA-256
   hashes, delivered by email from your payment webhook.
 - **Device binding** — one key = **1 Windows device + 1 macOS device**
-  (owner decision). Same hardware always re-activates freely.
+  (owner decision). Same hardware always re-activates freely. The rule
+  is enforced by a **partial unique index** in D1 — race-proof by
+  construction, not by check-then-insert code.
+- **Rich device facts (v2)** — activation AND every 24 h revalidation
+  carry the full device claim: hostname, OS version, app version, CPU
+  brand, RAM, machine model, plus per-component identity hashes
+  (MachineGuid / volume serial / CPUID) for swap forensics. Writes are
+  COALESCE-only — a sparse claim never blanks stored facts.
+- **Change detection (v2)** — an OS upgrade, app update, hostname
+  rename, or hardware swap on a registered device is audited with a
+  structured old → new diff.
+- **Rate limiting (v2)** — per-key and per-IP fixed windows on the
+  authenticated routes (D1 atomic upserts); the 429 `RATE_LIMITED`
+  contract is real, not reserved.
 - **Ed25519-signed entitlement tokens** — the desktop app verifies every
   token with the embedded **public key**, so a spoofed/mimicked license
   server cannot forge licenses (the private key never leaves this
   Worker). Tokens carry a 14-day offline grace window.
 - **24 h revalidation** — the app validates every 24 h; revocation and
   expiry take effect on the next check.
-- **Admin API** — generate/rotate/revoke keys, reset device slots, stats.
+- **Admin API** — generate/rotate/revoke/refund keys, transfer customer
+  identity, look a key up by its RAW value (support), reset device
+  slots, global device census, tier/platform stats.
 - **Request auth** — every app request is HMAC-signed (timestamp +
   single-use nonce + body hash); no CORS is ever emitted, so browsers
   cannot call this API.
@@ -46,6 +61,10 @@ npx wrangler d1 create diskbytes-license
 
 # 3. Apply the schema to the remote database
 npx wrangler d1 migrations apply DB --remote
+#    (ALREADY DEPLOYED on v1? Re-run this same command — migration 0002
+#     is additive: new device columns, the race-proof live-slot index,
+#     rate_buckets, license source + audit detail. It deduplicates any
+#     live-slot rows the v1 race produced, keeping the oldest.)
 
 # 4. Generate the Ed25519 signing keypair
 node scripts/generate-keypair.mjs
@@ -99,6 +118,8 @@ vars) in sync with the app's `GRACE_DAYS` (14 by default).
 |---|---|---|
 | wrangler.jsonc | `d1_databases[0].database_id` | your D1 id |
 | wrangler.jsonc | `vars.TOKEN_TTL_DAYS` | offline grace window (default 14) |
+| wrangler.jsonc | `vars.RATE_ACTIVATE_KEY_PER_HR` | activate/deactivate attempts per key per hour (default 10) |
+| wrangler.jsonc | `vars.RATE_VALIDATE_KEY_PER_HR` | validate attempts per key per hour (default 60) |
 | secret | `LICENSE_SIGNING_PRIVATE_KEY` | 64-hex Ed25519 seed |
 | secret | `ADMIN_API_KEY` | random 32+ chars (admin API bearer) |
 | secret | `CLIENT_REQUEST_SECRET` | 64-hex HMAC secret — MUST match the app's `CLIENT_SECRET_HEX` |
@@ -160,14 +181,18 @@ All admin routes require `Authorization: Bearer <ADMIN_API_KEY>`.
 
 | Method | Route | Body / Query | Returns |
 |---|---|---|---|
-| POST | `/v1/admin/keys` | `{ count?, tier, customerName, customerEmail, note?, days? }` | `{ keys: [{ key, tier, name, email, expiresAt }] }` |
-| GET | `/v1/admin/keys?offset&limit` | — | `{ total, keys: [publicLicense] }` (no raw keys) |
-| GET | `/v1/admin/keys/:id` | — | `{ license, devices: [...] }` |
+| POST | `/v1/admin/keys` | `{ count?, tier, customerName, customerEmail, note?, days?, source? }` | `{ keys: [{ key, tier, name, email, expiresAt }] }` |
+| POST | `/v1/admin/lookup` | `{ key: "DB-…" }` | `{ license, devices }` — resolve a RAW key (support has it from the purchase email) |
+| GET | `/v1/admin/keys?offset&limit&email=` | — | `{ total, keys: [publicLicense] }` (no raw keys; email filter = "customer lost the key") |
+| GET | `/v1/admin/keys/:id` | — | `{ license, devices: [full v2 device view] }` |
+| GET | `/v1/admin/devices?offset&limit` | — | `{ devices }` global census joined with license identity |
 | POST | `/v1/admin/keys/:id/revoke` | — | `{ ok }` (next 24 h check deactivates clients) |
+| POST | `/v1/admin/keys/:id/refund` | — | `{ ok }` (refunded status — distinct for reporting) |
 | POST | `/v1/admin/keys/:id/renew` | `{ days }` | `{ ok, expiresAt }` (re-activates + extends) |
+| POST | `/v1/admin/keys/:id/transfer` | `{ name?, email? }` | `{ ok, license }` (identity fix — next token carries it) |
 | POST | `/v1/admin/devices/:id/revoke` | — | `{ ok }` (frees that platform slot — support) |
 | POST | `/v1/admin/devices/:id/revive` | — | `{ ok }` (undo a reset) |
-| GET | `/v1/admin/stats` | — | `{ licenses, activeDevices, recentAudit }` |
+| GET | `/v1/admin/stats` | — | `{ licenses, activeDevices, byTierStatus, byPlatform, activations7d, validates7d, recentAudit }` |
 
 App routes (HMAC-authenticated, called by the desktop client only):
 `POST /v1/activate`, `POST /v1/validate`, `POST /v1/deactivate`,
@@ -175,8 +200,9 @@ App routes (HMAC-authenticated, called by the desktop client only):
 
 Error codes the app maps to typed UX copy: `KEY_NOT_FOUND`,
 `KEY_REVOKED`, `KEY_REFUNDED`, `LICENSE_EXPIRED`, `DEVICE_MISMATCH`,
-`DEVICE_SLOT_TAKEN`, `REPLAYED`, `BAD_SIGNATURE`, `RATE_LIMITED` (429
-reserved), `SERVER_ERROR`.
+`DEVICE_SLOT_TAKEN`, `REPLAYED`, `BAD_SIGNATURE`, `RATE_LIMITED` (429,
+returned by the D1 fixed-window limiter once the per-key or per-IP
+budget is exhausted), `SERVER_ERROR`.
 
 ## 8. Local development + sample database
 
@@ -232,13 +258,20 @@ npm test          # vitest with @cloudflare/vitest-pool-workers:
 npm run typecheck
 ```
 
-30 tests cover: the full activation lifecycle, per-platform device
+51 tests cover: the full activation lifecycle, per-platform device
 slots, same-hardware re-activation, stranger-device rejection,
-deactivation → re-registration, revocation, yearly expiry, renewal,
-nonce replay rejection, HMAC tampering, clock skew, admin auth, batch
-generation, raw-keys-never-stored, device reset, and the Ed25519
-tamper-detection matrix. GitHub Actions runs both on every push
-(`.github/workflows/ci.yml`).
+deactivation → re-registration, revocation, refund, yearly expiry,
+renewal, identity transfer, raw-key lookup, email filtering, the
+global device census, stats, nonce replay rejection, HMAC tampering,
+clock skew, oversized bodies, admin auth, batch generation,
+raw-keys-never-stored, device reset, the Ed25519 tamper-detection
+matrix, and the v2 regressions: **facts survive validate (the wipe
+bug)**, sparse claims never blank stored facts, garbage fields are
+dropped, the live-slot partial index blocks duplicates even by direct
+SQL, a revived row cannot displace the device that took its slot,
+per-key rate limits trip at the 11th attempt and reset on a new window,
+and change detection audits OS/app diffs. GitHub Actions runs both on
+every push (`.github/workflows/ci.yml`).
 
 ## 11. Operations
 
@@ -248,25 +281,30 @@ tamper-detection matrix. GitHub Actions runs both on every push
   D1 dashboard. `GET /v1/admin/stats` for business counts.
 - **Backups:** D1 → Settings → Export (SQL dump) on a schedule you
   choose; the license table is tiny (hashes + metadata).
-- **Rate limiting at the edge:** the Worker enforces replay/nonce
-  defense; for volume abuse add a Cloudflare WAF rate-limiting rule on
-  the route (dashboard-only, zero code).
+- **Rate limiting:** the Worker enforces per-key and per-IP fixed
+  windows (D1) on activate/validate/deactivate — tune via the
+  `RATE_*` vars. For volumetric abuse add a Cloudflare WAF rate rule
+  on the route too (dashboard-only, zero code).
 
 ## 12. File map
 
 ```
-wrangler.jsonc              Worker + D1 binding + vars
-migrations/0001_init.sql    D1 schema (licenses/devices/audit/nonce)
-src/index.ts                Router (fetch handler)
-src/routes/activate.ts      Device binding + token issuance
-src/routes/validate.ts      24 h revalidation
-src/routes/deactivate.ts    Slot release
-src/routes/admin.ts         Key generation + management
-src/guard.ts                Request HMAC + nonce + admin auth
-src/crypto.ts               Ed25519 / HMAC / base64url
-src/keys.ts                 Key generation + normalization
-src/tokens.ts               Token minting + response shaping
-src/db.ts                   D1 query layer
-scripts/                    keypair + secret + batch-key + local-seed generators
-test/                       30 vitest tests (real runtime + D1)
+wrangler.jsonc                 Worker + D1 binding + vars (+ rate vars)
+migrations/0001_init.sql       D1 schema v1 (licenses/devices/audit/nonce)
+migrations/0002_device_facts…  v2: device facts, live-slot unique index,
+                               rate_buckets, source/detail columns
+src/index.ts                   Router (fetch handler)
+src/routes/activate.ts         Device binding + token issuance (race-safe)
+src/routes/validate.ts         24 h revalidation (full claim — the wipe fix)
+src/routes/deactivate.ts       Slot release
+src/routes/admin.ts            Key generation + management + lookup/transfer
+src/routes/shared.ts           Wire-contract plumbing + rate policies
+src/guard.ts                   Request HMAC + nonce + admin auth
+src/crypto.ts                  Ed25519 / HMAC / base64url / salted IP hash
+src/detect.ts                  Device-change detection (audit diffs)
+src/keys.ts                    Key generation + normalization
+src/tokens.ts                  Token minting + response shaping
+src/db.ts                      D1 query layer (COALESCE writes, rate upserts)
+scripts/                       keypair + secret + batch-key + local-seed generators
+test/                          51 vitest tests (real runtime + D1)
 ```

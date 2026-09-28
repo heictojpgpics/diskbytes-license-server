@@ -124,3 +124,29 @@ export function randomHex(n: number): string {
   crypto.getRandomValues(b);
   return toHex(b);
 }
+
+// ── IP-hash salt (v2) ──────────────────────────────────────────────────
+//
+// v1 hashed `sha256("ip:" + ip)` — unsalted, so the schema's "salted"
+// comment was false and the hash was enumerable by anyone who could
+// test-candidate IPs against a leaked digest. The salt is now derived
+// from the Ed25519 signing seed (a value that NEVER ships in the
+// client), memoized per isolate (the seed is immutable per deploy).
+// Rotation note: rotating the signing key also rotates the salt —
+// pre-rotation ip_hash values stop matching; acceptable + documented.
+
+let ipSaltCache: string | null = null;
+
+/** The per-deployment IP-hash salt (derived; memoized per isolate). */
+export async function ipSalt(env: { LICENSE_SIGNING_PRIVATE_KEY: string }): Promise<string> {
+  if (ipSaltCache === null) {
+    ipSaltCache = await sha256Hex(`${env.LICENSE_SIGNING_PRIVATE_KEY}:ip-salt:v2`);
+  }
+  return ipSaltCache;
+}
+
+/** Salted, non-enumerable hash of the caller IP (audit storage form). */
+export async function ipHashOf(env: { LICENSE_SIGNING_PRIVATE_KEY: string }, ip: string | null): Promise<string> {
+  const salt = await ipSalt(env);
+  return sha256Hex(`${salt}:${ip ?? "unknown"}`);
+}

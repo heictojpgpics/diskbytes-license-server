@@ -24,7 +24,11 @@
   "vars": {
     // Offline grace window baked into every issued token. Keep in sync with
     // the app's GRACE_DAYS (src-tauri/src/license.rs).
-    "TOKEN_TTL_DAYS": "14"
+    "TOKEN_TTL_DAYS": "14",
+    // Rate limiting (per-key activate attempts per hour; default 10).
+    // Validate is 6x the activate limit; deactivate matches activate.
+    // The per-IP activate limit (30/h) is code-level, not a var.
+    "RATE_ACTIVATE_KEY_PER_HR": "10"
   },
   "d1_databases": [
     {

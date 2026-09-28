@@ -7,109 +7,142 @@
  * / re-image / OS upgrade keep the same machine identity). A different
  * hardware fingerprint hitting an occupied platform slot gets
  * DEVICE_SLOT_TAKEN.
+ *
+ * v2 hardening:
+ *  * The slot rule is enforced by the partial unique index
+ *    `idx_devices_live_slot` — INSERT and revive both map its
+ *    constraint failure to DEVICE_SLOT_TAKEN, so concurrent
+ *    activations can never double-register a slot (v1 had a
+ *    SELECT-then-INSERT TOCTOU window).
+ *  * Full v2 DeviceClaim (component hashes + descriptive facts) is
+ *    stored/refreshed with COALESCE semantics — never regresses to
+ *    NULL (the v1 validate path wiped hostname/os/app on recheck).
+ *  * Per-key and per-IP rate limits (D1 fixed window) on the
+ *    brute-forceable surface.
+ *  * Change detection: an OS/app/hostname change on a KNOWN device is
+ *    audited with a structured diff (support forensics).
  */
-import type { Env } from "../types";
+import type { Env, EntitlementResponse } from "../types";
 import { Db } from "../db";
 import { entitlementResponse, keyHashOf, mintToken } from "../tokens";
-import type { DeviceClaim, EntitlementResponse, ErrorResponse } from "../types";
-import { verifyAppRequest, type GuardFailure } from "../guard";
-import { sha256Hex } from "../crypto";
+import { detectChanges } from "../detect";
+import {
+  fail,
+  json,
+  normalizeKeyClaim,
+  isValidPlatform,
+  nowSec,
+  sanitizeClaim,
+  checkRate,
+  ACTIVATE_RATE,
+  isSlotTaken,
+  verifyAndParse,
+} from "./shared";
 
-interface ActivateBody extends DeviceClaim {
-  licenseKey: string;
+interface ActivateBody {
+  licenseKey?: unknown;
+  platform?: unknown;
+  hardwareHash?: unknown;
+  [k: string]: unknown;
 }
-
-const json = (status: number, body: object): Response =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json", "cache-control": "no-store" },
-  });
-
-const fail = (status: number, code: string, message: string): Response =>
-  json(status, { ok: false, code, message } satisfies ErrorResponse);
-
-const GUARD_STATUS: Record<GuardFailure, number> = {
-  BAD_SIGNATURE: 401,
-  BAD_TIMESTAMP: 401,
-  REPLAYED: 401,
-  BAD_UA: 403,
-  BAD_ADMIN_KEY: 401,
-};
 
 export async function handleActivate(env: Env, request: Request): Promise<Response> {
   const url = new URL(request.url);
-  const raw = await request.text();
-  const guard = await verifyAppRequest(env, request, url.pathname, raw);
-  if ("fail" in guard) {
-    await new Db(env.DB).audit({ event: "denied", reason: guard.fail, now: nowSec() });
-    return fail(GUARD_STATUS[guard.fail], guard.fail, "Request rejected.");
-  }
+  const guard = await verifyAndParse<ActivateBody>(env, request, url.pathname);
+  if ("fail" in guard) return guard.fail;
+  const { body, ipHash } = guard.ok;
 
-  const ipHash = await sha256Hex(`ip:${request.headers.get("cf-connecting-ip") ?? "unknown"}`);
-
-  let body: ActivateBody;
-  try {
-    body = JSON.parse(raw) as ActivateBody;
-  } catch {
-    return fail(400, "BAD_REQUEST", "Malformed request body.");
-  }
-  const key = (body.licenseKey ?? "").toUpperCase().replace(/[^0-9A-Z]/g, "");
-  if (key.length !== 22) return fail(400, "BAD_REQUEST", "Malformed license key.");
-  if (!isValidPlatform(body.platform)) return fail(400, "BAD_REQUEST", "Malformed platform.");
-  const hw = (body.hardwareHash ?? "").toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(hw)) return fail(400, "BAD_REQUEST", "Malformed device fingerprint.");
-
-  // Nonce replay: record AFTER structural validation so garbage floods
-  // do not burn nonce rows.
   const db = new Db(env.DB);
   const now = nowSec();
+
+  const key = normalizeKeyClaim(body.licenseKey);
+  if (key.length !== 22) return fail(400, "BAD_REQUEST", "Malformed license key.");
+  if (!isValidPlatform(body.platform)) return fail(400, "BAD_REQUEST", "Malformed platform.");
+  const platform = body.platform;
+  const hwRaw = typeof body.hardwareHash === "string" ? body.hardwareHash.toLowerCase() : "";
+  if (!/^[0-9a-f]{64}$/.test(hwRaw)) return fail(400, "BAD_REQUEST", "Malformed device fingerprint.");
+  const claim = sanitizeClaim(body, platform, hwRaw);
+  if (!claim) return fail(400, "BAD_REQUEST", "Malformed device claim.");
+  const hw = hwRaw;
+
+  // Nonce replay: record AFTER structural validation so garbage floods
+  // do not burn nonce rows (v1 semantics, kept).
   if (!(await db.consumeNonce(request.headers.get("x-db-nonce") ?? "", now))) {
-    await db.audit({ event: "replay", reason: "nonce", now, ipHash });
+    await db.audit({ event: "replay", reason: "nonce", ipHash, now });
     return fail(401, "REPLAYED", "Request rejected (replayed).");
   }
   await db.sweepNonces(now, 600);
 
+  // Rate limits (per key hash + per IP): the brute-force surface.
   const keyHash = await keyHashOf(key);
+  const limited = await checkRate(db, env, ACTIVATE_RATE, `act:key:${keyHash.slice(0, 16)}`, ipHash, now);
+  if (limited) {
+    await db.audit({
+      event: "denied",
+      reason: "RATE_LIMITED",
+      keyLast4: key.slice(-4),
+      platform,
+      ipHash,
+      now,
+    });
+    return limited;
+  }
+
   const license = await db.licenseByHash(keyHash);
   if (!license) {
-    await db.audit({ event: "denied", reason: "KEY_NOT_FOUND", keyLast4: key.slice(-4), platform: body.platform, ipHash, now });
+    await db.audit({ event: "denied", reason: "KEY_NOT_FOUND", keyLast4: key.slice(-4), platform, ipHash, now });
     return fail(404, "KEY_NOT_FOUND", "That license key isn't in our records. Check it and try again.");
   }
   const last4 = license.key_last4;
 
   if (license.status === "revoked" || license.status === "refunded") {
-    await db.audit({ licenseId: license.id, keyLast4: last4, event: "denied", reason: `KEY_${license.status.toUpperCase()}`, platform: body.platform, ipHash, now });
+    await db.audit({ licenseId: license.id, keyLast4: last4, event: "denied", reason: `KEY_${license.status.toUpperCase()}`, platform, ipHash, now });
     return fail(403, license.status === "revoked" ? "KEY_REVOKED" : "KEY_REFUNDED", "This license key is no longer active. Contact support.");
   }
   if (license.status === "pending") {
     return fail(403, "KEY_PENDING", "This license key hasn't been issued yet.");
   }
   if (license.expires_at !== null && license.expires_at <= now) {
-    await db.audit({ licenseId: license.id, keyLast4: last4, event: "denied", reason: "LICENSE_EXPIRED", platform: body.platform, ipHash, now });
+    await db.audit({ licenseId: license.id, keyLast4: last4, event: "denied", reason: "LICENSE_EXPIRED", platform, ipHash, now });
     return fail(403, "LICENSE_EXPIRED", "Your yearly license has expired — renew to keep DiskBytes Pro.");
   }
 
-  const platform = body.platform as "windows" | "macos";
-  const existing = await db.deviceByLicensePlatformHw(license.id, platform, hw);
+  // Bind the slot (race-safe: the partial unique index is the
+  // invariant; the explicit SELECT is just the fast path).
   let deviceRow;
-  if (existing && existing.revoked === 0) {
-    await db.touchDevice(existing.id, body, now);
-    deviceRow = { ...existing, last_seen_at: now };
-  } else if (existing && existing.revoked === 1) {
-    // Same hardware on a support-reset row: re-register it.
-    await db.reviveDevice(existing.id, now);
-    deviceRow = { ...existing, revoked: 0, last_seen_at: now, activated_at: now };
-  } else {
-    const live = await db.liveDevicesForPlatform(license.id, platform);
-    if (live.length >= 1) {
+  let outcome: "new" | "refresh" | "revive";
+  try {
+    const existing = await db.deviceByLicensePlatformHw(license.id, platform, hw);
+    if (existing && existing.revoked === 0) {
+      // Same hardware re-activating (reinstall): refresh facts, note
+      // anything that changed since the last time we saw this device.
+      const changes = detectChanges(claim, existing);
+      await db.touchDevice(existing.id, claim, now);
+      if (changes.event === "device_update") {
+        await db.audit({ licenseId: license.id, keyLast4: last4, event: changes.event, platform, hwPrefix: hw.slice(0, 12), ipHash, detail: changes.detail, now });
+      }
+      deviceRow = { ...existing, last_seen_at: now };
+      outcome = "refresh";
+    } else if (existing && existing.revoked === 1) {
+      // Same hardware on a support-reset row: re-register — the atomic
+      // revive refuses when another live device now holds the slot.
+      deviceRow = await db.reviveDevice(license.id, existing.id, platform, now);
+      await db.touchDevice(deviceRow.id, claim, now);
+      outcome = "revive";
+    } else {
+      deviceRow = await db.insertDevice(license.id, claim, now);
+      outcome = "new";
+    }
+  } catch (err) {
+    if (isSlotTaken(err)) {
       await db.audit({ licenseId: license.id, keyLast4: last4, event: "denied", reason: "DEVICE_SLOT_TAKEN", platform, hwPrefix: hw.slice(0, 12), ipHash, now });
       return fail(
         409,
         "DEVICE_SLOT_TAKEN",
-        "This key is already activated on another Windows PC — deactivate it there (or contact support) to move it here.",
+        "This key is already activated on another device. Contact support to move your license.",
       );
     }
-    deviceRow = await db.insertDevice(license.id, body, now);
+    throw err;
   }
 
   const token = await mintToken(
@@ -118,7 +151,7 @@ export async function handleActivate(env: Env, request: Request): Promise<Respon
     { platform, hardwareHash: hw },
     now,
   );
-  await db.audit({ licenseId: license.id, keyLast4: last4, event: "activate", platform, hwPrefix: hw.slice(0, 12), ipHash, now });
+  await db.audit({ licenseId: license.id, keyLast4: last4, event: "activate", platform, hwPrefix: hw.slice(0, 12), ipHash, detail: outcome, now });
   return json(200, entitlementResponse(token, {
     tier: license.tier,
     customerName: license.customer_name,
@@ -126,12 +159,4 @@ export async function handleActivate(env: Env, request: Request): Promise<Respon
     expiresAt: license.expires_at,
     keyLast4: last4,
   }, { platform, activatedAt: deviceRow.activated_at, lastSeenAt: now }) satisfies EntitlementResponse);
-}
-
-function isValidPlatform(p: unknown): boolean {
-  return p === "windows" || p === "macos";
-}
-
-function nowSec(): number {
-  return Math.floor(Date.now() / 1000);
 }

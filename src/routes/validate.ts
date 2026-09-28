@@ -4,58 +4,55 @@
  * fresh token on success. Explicit invalid outcomes (revoked, expired,
  * device revoked/mismatch) return the contract codes the client treats
  * as hard failures (local deactivate), NOT network errors.
+ *
+ * v2 — THE WIPE FIX: the v1 handler called touchDevice with an EMPTY
+ * claim {hardwareHash, platform}, and v1's touchDevice SET (not
+ * COALESCE) every column — so the FIRST 24 h revalidation blanked
+ * hostname/os_version/app_version to NULL. The owner saw exactly that
+ * in the admin panel ("doesn't save hostname/windows version"). The
+ * app now sends the FULL device claim on validate (same shape as
+ * activate), the server sanitizes it, and touchDevice COALESCEs — a
+ * missing field keeps the last known good value. Detectable changes
+ * (OS upgrade, app update) land in the audit trail with a structured
+ * diff.
  */
-import type { Env } from "../types";
+import type { Env, EntitlementResponse } from "../types";
 import { Db } from "../db";
 import { entitlementResponse, keyHashOf, mintToken } from "../tokens";
-import type { EntitlementResponse } from "../types";
-import { verifyAppRequest, type GuardFailure } from "../guard";
-import { sha256Hex } from "../crypto";
+import { detectChanges } from "../detect";
+import {
+  fail,
+  json,
+  normalizeKeyClaim,
+  isValidPlatform,
+  nowSec,
+  sanitizeClaim,
+  checkRate,
+  VALIDATE_RATE,
+  verifyAndParse,
+} from "./shared";
 
 interface ValidateBody {
-  licenseKey: string;
-  hardwareHash: string;
-  platform: string;
+  licenseKey?: unknown;
+  platform?: unknown;
+  hardwareHash?: unknown;
+  [k: string]: unknown;
 }
-
-const json = (status: number, body: object): Response =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json", "cache-control": "no-store" },
-  });
-
-const fail = (status: number, code: string, message: string): Response =>
-  json(status, { ok: false, code, message });
-
-const GUARD_STATUS: Record<GuardFailure, number> = {
-  BAD_SIGNATURE: 401,
-  BAD_TIMESTAMP: 401,
-  REPLAYED: 401,
-  BAD_UA: 403,
-  BAD_ADMIN_KEY: 401,
-};
 
 export async function handleValidate(env: Env, request: Request): Promise<Response> {
   const url = new URL(request.url);
-  const raw = await request.text();
-  const guard = await verifyAppRequest(env, request, url.pathname, raw);
-  if ("fail" in guard) {
-    await new Db(env.DB).audit({ event: "denied", reason: guard.fail, now: nowSec() });
-    return fail(GUARD_STATUS[guard.fail], guard.fail, "Request rejected.");
-  }
+  const guard = await verifyAndParse<ValidateBody>(env, request, url.pathname);
+  if ("fail" in guard) return guard.fail;
+  const { body, ipHash } = guard.ok;
 
-  let body: ValidateBody;
-  try {
-    body = JSON.parse(raw) as ValidateBody;
-  } catch {
-    return fail(400, "BAD_REQUEST", "Malformed request body.");
-  }
-  const key = (body.licenseKey ?? "").toUpperCase().replace(/[^0-9A-Z]/g, "");
-  const hw = (body.hardwareHash ?? "").toLowerCase();
+  const key = normalizeKeyClaim(body.licenseKey);
+  const hw = typeof body.hardwareHash === "string" ? body.hardwareHash.toLowerCase() : "";
   const platform = body.platform;
-  if (key.length !== 22 || !/^[0-9a-f]{64}$/.test(hw) || (platform !== "windows" && platform !== "macos")) {
+  if (key.length !== 22 || !/^[0-9a-f]{64}$/.test(hw) || !isValidPlatform(platform)) {
     return fail(400, "BAD_REQUEST", "Malformed request body.");
   }
+  const claim = sanitizeClaim(body, platform, hw);
+  if (!claim) return fail(400, "BAD_REQUEST", "Malformed device claim.");
 
   const db = new Db(env.DB);
   const now = nowSec();
@@ -63,11 +60,14 @@ export async function handleValidate(env: Env, request: Request): Promise<Respon
     return fail(401, "REPLAYED", "Request rejected (replayed).");
   }
   await db.sweepNonces(now, 600);
-  const ipHash = await sha256Hex(`ip:${request.headers.get("cf-connecting-ip") ?? "unknown"}`);
 
   const keyHash = await keyHashOf(key);
+  const limited = await checkRate(db, env, VALIDATE_RATE, `val:key:${keyHash.slice(0, 16)}`, ipHash, now);
+  if (limited) return limited;
+
   const license = await db.licenseByHash(keyHash);
   if (!license) {
+    await db.audit({ event: "denied", reason: "KEY_NOT_FOUND", keyLast4: key.slice(-4), platform, ipHash, now });
     return fail(404, "KEY_NOT_FOUND", "That license key isn't in our records.");
   }
   const denied = async (code: string, message: string): Promise<Response> => {
@@ -90,7 +90,13 @@ export async function handleValidate(env: Env, request: Request): Promise<Respon
     return denied("DEVICE_MISMATCH", "This device was deactivated. Activate again to re-register it.");
   }
 
-  await db.touchDevice(device.id, { hardwareHash: hw, platform }, now);
+  // THE FIX: refresh with the FULL claim (COALESCE on the write side).
+  const changes = detectChanges(claim, device);
+  await db.touchDevice(device.id, claim, now);
+  if (changes.event === "device_update") {
+    await db.audit({ licenseId: license.id, keyLast4: license.key_last4, event: changes.event, platform, hwPrefix: hw.slice(0, 12), ipHash, detail: changes.detail, now });
+  }
+
   const token = await mintToken(
     env,
     { id: license.id, keyHash: license.key_hash, tier: license.tier, customerName: license.customer_name, customerEmail: license.customer_email, expiresAt: license.expires_at },
@@ -105,8 +111,4 @@ export async function handleValidate(env: Env, request: Request): Promise<Respon
     expiresAt: license.expires_at,
     keyLast4: license.key_last4,
   }, { platform, activatedAt: device.activated_at, lastSeenAt: now }) satisfies EntitlementResponse);
-}
-
-function nowSec(): number {
-  return Math.floor(Date.now() / 1000);
 }
