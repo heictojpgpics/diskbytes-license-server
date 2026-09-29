@@ -1,5 +1,5 @@
 /**
- * DiskBytes license server — Worker entry (router), v2.
+ * DiskBytes license server — Worker entry (router), v3.
  *
  * App routes (request-HMAC auth, UA pinned):
  *   POST /v1/activate     bind device + mint token (rate-limited)
@@ -15,6 +15,10 @@
  * Admin (bearer):
  *   /v1/admin/*           key generation + management + lookup +
  *                         transfer + refund + device census (routes/admin.ts)
+ *
+ * v3: deeper hardware claims (baseboard serial, firmware UUID, BIOS
+ * build, core count, arch + their component hashes) with control-char
+ * cleaning so CPUID-brand strings with NUL padding survive sanitizing.
  */
 import { handleActivate } from "./routes/activate";
 import { handleValidate } from "./routes/validate";
@@ -34,7 +38,7 @@ export default {
 
     try {
       if (request.method === "GET" && path === "/v1/health") {
-        return json(200, { ok: true, service: "diskbytes-license", version: 2, time: Math.floor(Date.now() / 1000) });
+        return json(200, { ok: true, service: "diskbytes-license", version: 3, time: Math.floor(Date.now() / 1000) });
       }
       if (path.startsWith("/v1/admin")) {
         return handleAdmin(env, request, url);

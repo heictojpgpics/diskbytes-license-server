@@ -47,6 +47,14 @@ export interface DeviceRow {
   cpu_brand: string | null;
   ram_mb: number | null;
   machine_model: string | null;
+  baseboard_serial: string | null;
+  firmware_uuid: string | null;
+  bios_version: string | null;
+  cpu_cores: number | null;
+  arch: string | null;
+  comp_board: string | null;
+  comp_firmware: string | null;
+  facts_v3: number | null;
   activated_at: number;
   last_seen_at: number;
   revoked: number;
@@ -73,6 +81,18 @@ export class SlotTakenError extends Error {
     this.name = "SlotTakenError";
   }
 }
+
+/** True when the claim carries ANY v3 field — sets the row's facts_v3
+ * provenance marker ("this client already speaks v3"), so support can
+ * tell an old client from hardware that refuses to report a fact. */
+const claimHasV3 = (claim: DeviceClaim): boolean =>
+  claim.baseboardSerial !== undefined ||
+  claim.firmwareUuid !== undefined ||
+  claim.biosVersion !== undefined ||
+  claim.cpuCores !== undefined ||
+  claim.arch !== undefined ||
+  claim.compBoard !== undefined ||
+  claim.compFirmware !== undefined;
 
 const isSlotConstraint = (err: unknown): boolean => {
   const msg = err instanceof Error ? err.message : String(err);
@@ -275,8 +295,12 @@ export class Db {
         `INSERT INTO devices
            (license_id, platform, hardware_hash, hostname, os_version, app_version,
             comp_machine, comp_volume, comp_cpu, cpu_brand, ram_mb, machine_model,
+            baseboard_serial, firmware_uuid, bios_version, cpu_cores, arch,
+            comp_board, comp_firmware, facts_v3,
             activated_at, last_seen_at, revoked)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, 0)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                 ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
+                 ?21, ?21, 0)
          RETURNING *`,
       )
       .bind(
@@ -292,6 +316,14 @@ export class Db {
         claim.cpuBrand ?? null,
         claim.ramMb ?? null,
         claim.machineModel ?? null,
+        claim.baseboardSerial ?? null,
+        claim.firmwareUuid ?? null,
+        claim.biosVersion ?? null,
+        claim.cpuCores ?? null,
+        claim.arch ?? null,
+        claim.compBoard ?? null,
+        claim.compFirmware ?? null,
+        claimHasV3(claim) ? 1 : null,
         now,
       )
       .first<DeviceRow>()
@@ -326,7 +358,15 @@ export class Db {
            comp_cpu = COALESCE(?8, comp_cpu),
            cpu_brand = COALESCE(?9, cpu_brand),
            ram_mb = COALESCE(?10, ram_mb),
-           machine_model = COALESCE(?11, machine_model)
+           machine_model = COALESCE(?11, machine_model),
+           baseboard_serial = COALESCE(?12, baseboard_serial),
+           firmware_uuid = COALESCE(?13, firmware_uuid),
+           bios_version = COALESCE(?14, bios_version),
+           cpu_cores = COALESCE(?15, cpu_cores),
+           arch = COALESCE(?16, arch),
+           comp_board = COALESCE(?17, comp_board),
+           comp_firmware = COALESCE(?18, comp_firmware),
+           facts_v3 = COALESCE(?19, facts_v3)
          WHERE id = ?1`,
       )
       .bind(
@@ -341,6 +381,14 @@ export class Db {
         claim.cpuBrand ?? null,
         claim.ramMb ?? null,
         claim.machineModel ?? null,
+        claim.baseboardSerial ?? null,
+        claim.firmwareUuid ?? null,
+        claim.biosVersion ?? null,
+        claim.cpuCores ?? null,
+        claim.arch ?? null,
+        claim.compBoard ?? null,
+        claim.compFirmware ?? null,
+        claimHasV3(claim) ? 1 : null,
       )
       .run()
       .then(() => undefined);

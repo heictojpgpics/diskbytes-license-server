@@ -60,6 +60,14 @@ const FULL_FACTS = {
   cpuBrand: "Intel Core i7-1260P",
   ramMb: 16384,
   machineModel: "Dell Inc. XPS 15 9520",
+  // v3 facts
+  baseboardSerial: "BX24RTK81",
+  firmwareUuid: "4C4C4544-0042-4E10-8032-B2C04F475030",
+  biosVersion: "DELL A08",
+  cpuCores: 16,
+  arch: "x86_64",
+  compBoard: "d".repeat(64),
+  compFirmware: "e".repeat(64),
 };
 
 describe("the device-facts lifecycle (v2 core fix)", () => {
@@ -161,7 +169,7 @@ describe("the device-facts lifecycle (v2 core fix)", () => {
     const act = await call(signedRequest("POST", "/v1/activate", {
       licenseKey: key, hardwareHash: hw(7), platform: "windows",
       ...FULL_FACTS,
-      hostname: "NUL\x00INJ",                    // control char → dropped
+      hostname: "NUL\x00INJ",                    // control char → CLEANED (v3), not dropped
       cpuBrand: "x".repeat(400),                  // oversized → truncated to 120
       compMachine: "not-hex!",                    // invalid → dropped
       ramMb: 9_999_999,                           // out of range → clamped (1 TB max)
@@ -169,10 +177,87 @@ describe("the device-facts lifecycle (v2 core fix)", () => {
     expect(act.status).toBe(200);
     const detail = await admin(`/v1/admin/keys/${await licenseIdOf(key)}`);
     const d = detail.body.devices[0]!;
-    expect(d.hostname).toBeNull();
+    // v3: control chars are scrubbed ("NUL\x00INJ" → "NUL INJ") — the
+    // v2 drop-to-NULL was the "cpu brand doesn't work" root cause.
+    expect(d.hostname).toBe("NUL INJ");
     expect(d.cpuBrand.length).toBe(120);
     expect(d.compMachine).toBeNull();
     expect(d.ramMb).toBe(1_048_576);
+  });
+
+  it("v3 facts round-trip: baseboard/firmware/bios/cores/arch stored", async () => {
+    const key = await genKey("lifetime", "V Three", "v3@example.com");
+    const act = await call(signedRequest("POST", "/v1/activate", {
+      licenseKey: key, hardwareHash: hw(9), platform: "windows", ...FULL_FACTS,
+    }));
+    expect(act.status).toBe(200);
+    const detail = await admin(`/v1/admin/keys/${await licenseIdOf(key)}`);
+    const d = detail.body.devices[0]!;
+    expect(d.baseboardSerial).toBe("BX24RTK81");
+    expect(d.firmwareUuid).toBe("4c4c4544-0042-4e10-8032-b2c04f475030");
+    expect(d.biosVersion).toBe("DELL A08");
+    expect(d.cpuCores).toBe(16);
+    expect(d.arch).toBe("x86_64");
+    expect(d.compBoard).toBe("d".repeat(64));
+    expect(d.compFirmware).toBe("e".repeat(64));
+    expect(d.factsV3).toBe(true);
+  });
+
+  it("v3 sanitizer: cpuCores clamps, arch whitelist, garbage uuid dropped", async () => {
+    const key = await genKey("lifetime", "Edge Case", "edge@example.com");
+    const act = await call(signedRequest("POST", "/v1/activate", {
+      licenseKey: key, hardwareHash: hw(10), platform: "windows",
+      cpuCores: 9999,                 // out of range → clamped (1024 max)
+      arch: "powerpc",                // not whitelisted → dropped
+      firmwareUuid: "not-a-uuid",     // malformed → dropped
+      cpuBrand: "  QEMU  \x00\x00 Virtual  CPU\x00 ",  // NUL-padded brand → cleaned
+    }));
+    expect(act.status).toBe(200);
+    const detail = await admin(`/v1/admin/keys/${await licenseIdOf(key)}`);
+    const d = detail.body.devices[0]!;
+    expect(d.cpuCores).toBe(1024);
+    expect(d.arch).toBeNull();
+    expect(d.firmwareUuid).toBeNull();
+    expect(d.cpuBrand).toBe("QEMU Virtual CPU");
+  });
+
+  it("v3 wipe regression: sparse revalidation keeps the v3 facts (COALESCE)", async () => {
+    const key = await genKey("lifetime", "Sparse V3", "sparse@example.com");
+    await call(signedRequest("POST", "/v1/activate", {
+      licenseKey: key, hardwareHash: hw(11), platform: "windows", ...FULL_FACTS,
+    }));
+    await call(signedRequest("POST", "/v1/validate", {
+      // v2-era client: ONLY the v2 fields, no v3 facts at all
+      licenseKey: key, hardwareHash: hw(11), platform: "windows",
+      hostname: "REPRO-PC",
+    }));
+    const detail = await admin(`/v1/admin/keys/${await licenseIdOf(key)}`);
+    const d = detail.body.devices[0]!;
+    expect(d.baseboardSerial).toBe("BX24RTK81");
+    expect(d.firmwareUuid).toBe("4c4c4544-0042-4e10-8032-b2c04f475030");
+    expect(d.cpuCores).toBe(16);
+    expect(d.arch).toBe("x86_64");
+    expect(d.compBoard).toBe("d".repeat(64));
+    expect(d.compFirmware).toBe("e".repeat(64));
+  });
+
+  it("v3 change detection: a core-count / board change lands in the diff", async () => {
+    const key = await genKey("lifetime", "Diff V3", "diffv3@example.com");
+    await call(signedRequest("POST", "/v1/activate", {
+      licenseKey: key, hardwareHash: hw(12), platform: "windows", ...FULL_FACTS,
+    }));
+    await call(signedRequest("POST", "/v1/validate", {
+      licenseKey: key, hardwareHash: hw(12), platform: "windows",
+      ...FULL_FACTS, cpuCores: 8, baseboardSerial: "BX999REPLACED", compBoard: "f".repeat(64),
+    }));
+    const events = await env.DB.prepare(
+      "SELECT detail FROM audit_events WHERE event = 'device_update'",
+    ).all<{ detail: string }>();
+    expect(events.results.length).toBe(1);
+    const diff = JSON.parse(events.results[0]!.detail);
+    expect(diff.cpuCores).toEqual(["16", "8"]);
+    expect(diff.baseboardSerial).toEqual(["BX24RTK81", "BX999REPLACED"]);
+    expect(diff.compBoard).toEqual(["d".repeat(64), "f".repeat(64)]);
   });
 });
 
@@ -381,7 +466,7 @@ describe("protocol hardening", () => {
       env as unknown as Env,
       ctx,
     );
-    expect(res.headers.get("x-db-license-server")).toBe("diskbytes/2");
+    expect(res.headers.get("x-db-license-server")).toBe("diskbytes/3");
   });
 
   it("validate on an unknown key is audited (v1 gap)", async () => {

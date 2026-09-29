@@ -15,7 +15,7 @@ export const json = (status: number, body: object): Response =>
     headers: {
       "content-type": "application/json",
       "cache-control": "no-store",
-      "x-db-license-server": "diskbytes/2",
+      "x-db-license-server": "diskbytes/3",
     },
   });
 
@@ -82,12 +82,27 @@ export function isValidPlatform(p: unknown): p is "windows" | "macos" {
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const SAFE_TEXT = /^[\x20-\x7e]{0,120}$/; // printable ASCII, ≤120 chars
+const UUID36 = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const ARCHES = new Set(["x86_64", "aarch64", "x86", "arm"]);
+
+/** Strip control characters (CPUID brand strings carry NUL padding;
+ * SMBIOS strings can carry stray \r\n) and collapse runs of spaces —
+ * v2 dropped the whole field on the first control char, which is why
+ * "cpu brand doesn't seem to work" on VM/QEMU-style brand strings. */
+const cleanText = (v: string): string =>
+  v
+    .replace(/[\x00-\x1f\x7f]/g, " ")
+    .replace(/ {2,}/g, " ")
+    .trim()
+    .slice(0, 120);
 
 /**
- * Validate + sanitize the v2 DeviceClaim (all new fields optional —
- * older clients simply omit them). Unknown/garbage fields are dropped,
- * text fields are length- and charset-capped, hex fields are strict.
- * Returns null when the claim body itself is malformed.
+ * Validate + sanitize the v3 DeviceClaim (all optional fields — older
+ * clients simply omit them). Unknown/garbage fields are dropped, text
+ * fields are length- and charset-capped (control chars cleaned, not
+ * fatal), hex fields are strict, arch is a whitelist, numeric fields
+ * are range-clamped. Returns null when the claim body itself is
+ * malformed.
  */
 export function sanitizeClaim(
   raw: unknown,
@@ -97,19 +112,29 @@ export function sanitizeClaim(
   if (raw === null || typeof raw !== "object") return null;
   const c = raw as Record<string, unknown>;
   const text = (v: unknown): string | undefined => {
-    if (typeof v !== "string" || v.length === 0) return undefined;
-    const trimmed = v.trim().slice(0, 120);
-    return SAFE_TEXT.test(trimmed) ? trimmed : undefined;
+    if (typeof v !== "string") return undefined;
+    const cleaned = cleanText(v);
+    return cleaned.length > 0 && SAFE_TEXT.test(cleaned) ? cleaned : undefined;
   };
   const hex64 = (v: unknown): string | undefined => {
     if (typeof v !== "string") return undefined;
     const lower = v.toLowerCase();
     return HEX64.test(lower) ? lower : undefined;
   };
+  const uuid = (v: unknown): string | undefined => {
+    if (typeof v !== "string") return undefined;
+    const lower = cleanText(v).toLowerCase();
+    return UUID36.test(lower) ? lower : undefined;
+  };
   let ramMb: number | undefined;
   if (typeof c.ramMb === "number" && Number.isFinite(c.ramMb)) {
     ramMb = Math.min(Math.max(Math.round(c.ramMb), 0), 1_048_576);
   }
+  let cpuCores: number | undefined;
+  if (typeof c.cpuCores === "number" && Number.isFinite(c.cpuCores)) {
+    cpuCores = Math.min(Math.max(Math.round(c.cpuCores), 0), 1024);
+  }
+  const arch = typeof c.arch === "string" && ARCHES.has(c.arch) ? c.arch : undefined;
   return {
     hardwareHash,
     platform,
@@ -122,6 +147,13 @@ export function sanitizeClaim(
     cpuBrand: text(c.cpuBrand),
     ramMb,
     machineModel: text(c.machineModel),
+    baseboardSerial: text(c.baseboardSerial),
+    firmwareUuid: uuid(c.firmwareUuid),
+    biosVersion: text(c.biosVersion),
+    cpuCores,
+    arch,
+    compBoard: hex64(c.compBoard),
+    compFirmware: hex64(c.compFirmware),
   };
 }
 

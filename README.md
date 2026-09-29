@@ -9,11 +9,15 @@ analyzer): Cloudflare Worker + D1.
   (owner decision). Same hardware always re-activates freely. The rule
   is enforced by a **partial unique index** in D1 — race-proof by
   construction, not by check-then-insert code.
-- **Rich device facts (v2)** — activation AND every 24 h revalidation
+- **Rich device facts (v2/v3)** — activation AND every 24 h revalidation
   carry the full device claim: hostname, OS version, app version, CPU
-  brand, RAM, machine model, plus per-component identity hashes
-  (MachineGuid / volume serial / CPUID) for swap forensics. Writes are
-  COALESCE-only — a sparse claim never blanks stored facts.
+  brand, RAM, machine model, baseboard serial, firmware UUID, BIOS
+  version, CPU core count, arch, plus per-component identity hashes
+  (MachineGuid / volume serial / CPUID / baseboard / firmware) for
+  swap forensics. Writes are COALESCE-only — a sparse claim never
+  blanks stored facts. Control characters (NUL-padded CPUID brand
+  strings) are CLEANED, not dropped — the v2 drop was the "cpu brand
+  doesn't work" report.
 - **Change detection (v2)** — an OS upgrade, app update, hostname
   rename, or hardware swap on a registered device is audited with a
   structured old → new diff.
@@ -61,10 +65,10 @@ npx wrangler d1 create diskbytes-license
 
 # 3. Apply the schema to the remote database
 npx wrangler d1 migrations apply DB --remote
-#    (ALREADY DEPLOYED on v1? Re-run this same command — migration 0002
-#     is additive: new device columns, the race-proof live-slot index,
-#     rate_buckets, license source + audit detail. It deduplicates any
-#     live-slot rows the v1 race produced, keeping the oldest.)
+#    (ALREADY DEPLOYED on v1/v2? Re-run this same command — migrations
+#     0002 + 0003 are additive: new device columns, the race-proof
+#     live-slot index, rate_buckets, license source + audit detail,
+#     and the v3 hardware-facts columns. Nothing rewrites existing rows.)
 
 # 4. Generate the Ed25519 signing keypair
 node scripts/generate-keypair.mjs
@@ -301,6 +305,8 @@ wrangler.jsonc                 Worker + D1 binding + vars (+ rate vars)
 migrations/0001_init.sql       D1 schema v1 (licenses/devices/audit/nonce)
 migrations/0002_device_facts…  v2: device facts, live-slot unique index,
                                rate_buckets, source/detail columns
+migrations/0003_device_facts…  v3: baseboard/firmware/BIOS/cores/arch
+                               + comp_board/comp_firmware + facts_v3
 src/index.ts                   Router (fetch handler)
 src/routes/activate.ts         Device binding + token issuance (race-safe)
 src/routes/validate.ts         24 h revalidation (full claim — the wipe fix)

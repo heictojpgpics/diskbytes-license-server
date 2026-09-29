@@ -287,7 +287,7 @@ function publicLicense(row: LicenseRow) {
   };
 }
 
-/** The full v2 device view — every binding + descriptive fact. */
+/** The full v3 device view — every binding + descriptive fact. */
 function publicDevice(d: DeviceRow) {
   return {
     id: d.id,
@@ -302,6 +302,14 @@ function publicDevice(d: DeviceRow) {
     cpuBrand: d.cpu_brand,
     ramMb: d.ram_mb,
     machineModel: d.machine_model,
+    baseboardSerial: d.baseboard_serial,
+    firmwareUuid: d.firmware_uuid,
+    biosVersion: d.bios_version,
+    cpuCores: d.cpu_cores,
+    arch: d.arch,
+    compBoard: d.comp_board,
+    compFirmware: d.comp_firmware,
+    factsV3: d.facts_v3 === 1,
     activatedAt: d.activated_at,
     lastSeenAt: d.last_seen_at,
     revoked: d.revoked === 1,

@@ -58,6 +58,22 @@ export interface DeviceClaim {
   ramMb?: number;
   /** Machine model for display ("Dell Inc. XPS 15 9520"). */
   machineModel?: string;
+  /** v3: baseboard serial (Windows SMBIOS BaseBoard / macOS
+   * IOPlatformSerialNumber) — swap-forensics component. */
+  baseboardSerial?: string;
+  /** v3: firmware UUID (Windows SMBIOS System UUID / macOS
+   * IOPlatformUUID) — canonical 36-char form. */
+  firmwareUuid?: string;
+  /** v3: BIOS/firmware build string (display-only). */
+  biosVersion?: string;
+  /** v3: logical CPU count. */
+  cpuCores?: number;
+  /** v3: CPU architecture ("x86_64" | "aarch64"). */
+  arch?: string;
+  /** v3: sha256("board:" + baseboard serial) — 64 hex. */
+  compBoard?: string;
+  /** v3: sha256("firmware:" + firmware UUID) — 64 hex. */
+  compFirmware?: string;
 }
 
 /** Entitlement token payload (Ed25519-signed; b64url(json).b64url(sig)). */

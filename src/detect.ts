@@ -27,6 +27,15 @@ const TEXT_FIELDS: { key: keyof DeviceClaim; col: keyof DeviceRow; label: string
   { key: "compMachine", col: "comp_machine", label: "compMachine" },
   { key: "compVolume", col: "comp_volume", label: "compVolume" },
   { key: "compCpu", col: "comp_cpu", label: "compCpu" },
+  // v3 components: a changed comp_board with stable comp_machine is a
+  // motherboard RMA; a changed comp_firmware is a firmware reflash (or
+  // a new mainboard); baseboard/firmware/bios are the readable twins.
+  { key: "baseboardSerial", col: "baseboard_serial", label: "baseboardSerial" },
+  { key: "firmwareUuid", col: "firmware_uuid", label: "firmwareUuid" },
+  { key: "biosVersion", col: "bios_version", label: "biosVersion" },
+  { key: "compBoard", col: "comp_board", label: "compBoard" },
+  { key: "compFirmware", col: "comp_firmware", label: "compFirmware" },
+  { key: "arch", col: "arch", label: "arch" },
 ];
 
 /**
@@ -50,6 +59,11 @@ export function detectChanges(claim: DeviceClaim, row: DeviceRow): DeviceChanges
     if (drift >= 0.25) {
       changes.ramMb = [String(row.ram_mb), String(claim.ramMb)];
     }
+  }
+  // CPU core count is exact — logical processors don't drift; a change
+  // is a CPU/machine swap (or a VM re-configuration).
+  if (claim.cpuCores !== undefined && row.cpu_cores !== null && claim.cpuCores !== row.cpu_cores) {
+    changes.cpuCores = [String(row.cpu_cores), String(claim.cpuCores)];
   }
   const keys = Object.keys(changes);
   if (keys.length === 0) {
