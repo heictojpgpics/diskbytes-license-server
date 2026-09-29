@@ -23,6 +23,11 @@ export default defineConfig({
           CLIENT_REQUEST_SECRET: TEST_CLIENT_SECRET,
           TOKEN_TTL_DAYS: "14",
         },
+        // Second D1 database (v2-shaped) for the self-healing schema
+        // bootstrap test — a deploy where the Worker updated but the
+        // migration lagged must keep working. (Pool-workers' override
+        // form: binding → database id string.)
+        d1Databases: { DB_V2: "v2-schema-test-db" },
       },
     }),
   ],

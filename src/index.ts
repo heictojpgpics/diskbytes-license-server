@@ -26,6 +26,7 @@ import { handleDeactivate } from "./routes/deactivate";
 import { handleAdmin } from "./routes/admin";
 import { verifyAppRequest } from "./guard";
 import { publicKeyFromSeed, toHex, verifyToken } from "./crypto";
+import { ensureSchema } from "./schema";
 import type { Env } from "./types";
 import { json } from "./routes/shared";
 
@@ -37,6 +38,10 @@ export default {
     const path = url.pathname.replace(/\/$/, "");
 
     try {
+      // Self-healing additive schema (v3): the deploy pipeline ships
+      // code faster than migrations; ensure the v3 columns exist before
+      // any route touches them (per-isolate latch — see src/schema.ts).
+      await ensureSchema(env.DB);
       if (request.method === "GET" && path === "/v1/health") {
         return json(200, { ok: true, service: "diskbytes-license", version: 3, time: Math.floor(Date.now() / 1000) });
       }
