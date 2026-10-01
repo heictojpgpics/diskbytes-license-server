@@ -14,7 +14,18 @@ import type { Env } from "./types";
 import { hmacHex, sha256Hex, timingSafeEqual } from "./crypto";
 
 const CLOCK_WINDOW_S = 300;
-const CLIENT_UA = "DiskGenie-License-Client/1";
+
+/** The client's pinned User-Agent (friction layer — the real boundary is
+ *  the Ed25519 signature on responses).
+ *
+ *  RENAME COMPAT WINDOW (DiskBytes → DiskGenie, 2026-10): the deployed
+ *  worker validates the OLD value, and shipped app builds still send it;
+ *  renamed builds send the new one. Accept BOTH until every install has
+ *  updated, then retire the old entry. */
+const CLIENT_UAS = new Set([
+  "DiskGenie-License-Client/1",
+  "DiskBytes-License-Client/1",
+]);
 
 export type GuardFailure =
   | "BAD_SIGNATURE"
@@ -37,7 +48,7 @@ export async function verifyAppRequest(
   rawBody: string,
 ): Promise<{ ok: AppRequest } | { fail: GuardFailure }> {
   const ua = request.headers.get("user-agent") ?? "";
-  if (ua !== CLIENT_UA) return { fail: "BAD_UA" };
+  if (!CLIENT_UAS.has(ua)) return { fail: "BAD_UA" };
 
   const ts = request.headers.get("x-db-timestamp") ?? "";
   const nonce = request.headers.get("x-db-nonce") ?? "";

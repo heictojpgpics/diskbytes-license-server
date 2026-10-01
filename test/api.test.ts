@@ -61,6 +61,22 @@ describe("health + auth", () => {
     expect(body.code).toBe("BAD_UA");
   });
 
+  it("accepts the PRE-RENAME user-agent (the DiskBytes compat window)", async () => {
+    // The 2026-10 product rename: every already-shipped app build sends
+    // the old UA. The guard must accept BOTH until the compat window
+    // retires — pinned here so a cleanup can't silently break old
+    // installs. (A well-formed-but-unknown key reaching KEY_NOT_FOUND
+    // PROVES the request cleared the guard: BAD_UA would 403 first.)
+    const { status, body } = await call(await signedRequest(
+      "POST",
+      "/v1/activate",
+      { licenseKey: "DB" + "1".repeat(20), hardwareHash: hw(1), platform: "windows" },
+      { userAgent: "DiskBytes-License-Client/1" },
+    ));
+    expect(status).toBe(404);
+    expect(body.code).toBe("KEY_NOT_FOUND");
+  });
+
   it("rejects a tampered signature", async () => {
     const { status, body } = await call(await signedRequest("POST", "/v1/validate", { licenseKey: "DB" + "0".repeat(20), hardwareHash: hw(1), platform: "windows" }, { signature: "f".repeat(128) }));
     expect(status).toBe(401);
