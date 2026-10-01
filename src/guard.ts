@@ -14,7 +14,7 @@ import type { Env } from "./types";
 import { hmacHex, sha256Hex, timingSafeEqual } from "./crypto";
 
 const CLOCK_WINDOW_S = 300;
-const CLIENT_UA = "DiskBytes-License-Client/1";
+const CLIENT_UA = "DiskGenie-License-Client/1";
 
 export type GuardFailure =
   | "BAD_SIGNATURE"

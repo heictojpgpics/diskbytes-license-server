@@ -19,7 +19,7 @@ const call = async (req: Request | Promise<Request>) => {
   return { status: res.status, body: (await res.json()) as Record<string, any> };
 };
 const admin = async (path: string, init?: RequestInit) =>
-  call(new Request(`https://license.diskbytes.test${path}`, {
+  call(new Request(`https://license.diskgenie.test${path}`, {
     headers: { authorization: `Bearer ${TEST_ADMIN_KEY}`, ...init?.headers },
     ...init,
   }));
@@ -462,11 +462,11 @@ describe("protocol hardening", () => {
 
   it("every v2 response announces the server version", async () => {
     const res = await worker.fetch(
-      new Request("https://license.diskbytes.test/v1/health"),
+      new Request("https://license.diskgenie.test/v1/health"),
       env as unknown as Env,
       ctx,
     );
-    expect(res.headers.get("x-db-license-server")).toBe("diskbytes/3");
+    expect(res.headers.get("x-db-license-server")).toBe("diskgenie/3");
   });
 
   it("validate on an unknown key is audited (v1 gap)", async () => {

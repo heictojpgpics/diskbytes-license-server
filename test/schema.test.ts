@@ -121,7 +121,7 @@ describe("self-healing schema bootstrap (v3 deploy safety)", () => {
     for (const col of v3ColumnNames) expect(beforeNames.has(col)).toBe(false);
 
     // First request through the router triggers the bootstrap.
-    const keyRes = await callV2(new Request("https://license.diskbytes.test/v1/admin/keys", {
+    const keyRes = await callV2(new Request("https://license.diskgenie.test/v1/admin/keys", {
       method: "POST",
       headers: { authorization: `Bearer ${TEST_ADMIN_KEY}`, "content-type": "application/json" },
       body: JSON.stringify({ tier: "lifetime", customerName: "Heal Test", customerEmail: "heal@example.com" }),
@@ -148,7 +148,7 @@ describe("self-healing schema bootstrap (v3 deploy safety)", () => {
     expect(act.status).toBe(200);
 
     const detail = await callV2(new Request(
-      `https://license.diskbytes.test/v1/admin/lookup`,
+      `https://license.diskgenie.test/v1/admin/lookup`,
       { method: "POST", headers: { authorization: `Bearer ${TEST_ADMIN_KEY}`, "content-type": "application/json" }, body: JSON.stringify({ key }) },
     ));
     expect(detail.status).toBe(200);
@@ -163,7 +163,7 @@ describe("self-healing schema bootstrap (v3 deploy safety)", () => {
 
   it("the bootstrap is idempotent (a second pass changes nothing and never throws)", async () => {
     resetSchemaLatchForTest();
-    const res = await callV2(new Request("https://license.diskbytes.test/v1/health"));
+    const res = await callV2(new Request("https://license.diskgenie.test/v1/health"));
     expect(res.status).toBe(200);
     expect(res.body.version).toBe(3);
     const info = await testEnv.DB_V2.prepare("PRAGMA table_info(devices)").all<{ name: string }>();

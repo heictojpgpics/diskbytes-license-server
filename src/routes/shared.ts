@@ -15,7 +15,7 @@ export const json = (status: number, body: object): Response =>
     headers: {
       "content-type": "application/json",
       "cache-control": "no-store",
-      "x-db-license-server": "diskbytes/3",
+      "x-db-license-server": "diskgenie/3",
     },
   });
 

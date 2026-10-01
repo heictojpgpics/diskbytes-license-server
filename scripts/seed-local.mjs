@@ -30,12 +30,12 @@ const entries = [
 ];
 const statements = entries.map((e) => {
   const last4 = e.key.slice(-4);
-  return `INSERT INTO licenses (key_hash, key_last4, tier, status, customer_name, customer_email, note, source, issued_at, expires_at, created_at, updated_at) VALUES ('${sha256(e.key)}', '${last4}', '${e.tier}', 'active', 'Dev Tester', 'dev@diskbytes.local', 'local seed', 'seed', ${now}, ${e.expiresAt ?? "NULL"}, ${now}, ${now});`;
+  return `INSERT INTO licenses (key_hash, key_last4, tier, status, customer_name, customer_email, note, source, issued_at, expires_at, created_at, updated_at) VALUES ('${sha256(e.key)}', '${last4}', '${e.tier}', 'active', 'Dev Tester', 'dev@diskgenie.local', 'local seed', 'seed', ${now}, ${e.expiresAt ?? "NULL"}, ${now}, ${now});`;
 });
 const sql = statements.join("\n");
 await run("npx", ["wrangler", "d1", "execute", "DB", "--local", "--command", sql], { cwd: process.cwd() });
 console.log("Seeded local D1 (lifetime + yearly dev keys):");
 for (const e of entries) {
   const pretty = e.key.replace(/(.{5})(?=.)/g, "$1-");
-  console.log(`  ${pretty}  (${e.tier}, dev@diskbytes.local)`);
+  console.log(`  ${pretty}  (${e.tier}, dev@diskgenie.local)`);
 }

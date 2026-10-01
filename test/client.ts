@@ -6,7 +6,7 @@
 import { hmacHex, randomHex, sha256Hex } from "../src/crypto";
 import { TEST_CLIENT_SECRET } from "./constants";
 
-export const UA = "DiskBytes-License-Client/1";
+export const UA = "DiskGenie-License-Client/1";
 
 export interface RequestOpts {
   timestamp?: number;
@@ -28,12 +28,12 @@ export async function signedRequest(
   const signature =
     opts.signature ??
     (await hmacHex(TEST_CLIENT_SECRET, `${timestamp}.${nonce}.${method}.${path}.${bodyHash}`));
-  return new Request(`https://license.diskbytes.test${path}`, {
+  return new Request(`https://license.diskgenie.test${path}`, {
     method,
     headers: {
       "content-type": "application/json",
       "user-agent": opts.userAgent ?? UA,
-      "x-db-app": "diskbytes",
+      "x-db-app": "diskgenie",
       "x-db-version": "0.1.0",
       "x-db-timestamp": String(timestamp),
       "x-db-nonce": nonce,

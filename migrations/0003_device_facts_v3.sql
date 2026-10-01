@@ -1,4 +1,4 @@
--- DiskBytes license server — migration 0003 (v3: deeper hardware
+-- DiskGenie license server — migration 0003 (v3: deeper hardware
 -- binding + smarter sanitization support).
 --
 -- WHAT THIS ADDS (all additive — v1/v2 clients and rows keep working):

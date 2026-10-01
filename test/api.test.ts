@@ -24,7 +24,7 @@ const call = async (req: Request | Promise<Request>) => {
   return { status: res.status, body: (await res.json()) as Record<string, any> };
 };
 const admin = async (path: string, init?: RequestInit) =>
-  call(new Request(`https://license.diskbytes.test${path}`, {
+  call(new Request(`https://license.diskgenie.test${path}`, {
     headers: { authorization: `Bearer ${TEST_ADMIN_KEY}`, ...init?.headers },
     ...init,
   }));
@@ -47,13 +47,13 @@ void INITIAL_SCHEMA;
 
 describe("health + auth", () => {
   it("health is public", async () => {
-    const { status, body } = await call(new Request("https://license.diskbytes.test/v1/health"));
+    const { status, body } = await call(new Request("https://license.diskgenie.test/v1/health"));
     expect(status).toBe(200);
     expect(body.ok).toBe(true);
   });
 
   it("rejects unsigned requests (no HMAC)", async () => {
-    const { status, body } = await call(new Request("https://license.diskbytes.test/v1/activate", {
+    const { status, body } = await call(new Request("https://license.diskgenie.test/v1/activate", {
       method: "POST",
       body: "{}",
     }));
@@ -84,7 +84,7 @@ describe("health + auth", () => {
   });
 
   it("admin requires the bearer key", async () => {
-    const { status } = await call(new Request("https://license.diskbytes.test/v1/admin/stats"));
+    const { status } = await call(new Request("https://license.diskgenie.test/v1/admin/stats"));
     expect(status).toBe(401);
   });
 });

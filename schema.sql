@@ -1,4 +1,4 @@
--- DiskBytes license server — D1 schema (migration 0001).
+-- DiskGenie license server — D1 schema (migration 0001).
 -- Design notes (docs in the app repo: docs/LICENSING-ARCHITECTURE.md §5):
 --  * Raw license keys are NEVER stored — only sha256(key) hashes.
 --  * One license = 1 Windows device + 1 macOS device (enforced in code,

@@ -1,6 +1,6 @@
-# DiskBytes License Server
+# DiskGenie License Server
 
-Production licensing backend for **DiskBytes** (Windows + macOS disk-space
+Production licensing backend for **DiskGenie** (Windows + macOS disk-space
 analyzer): Cloudflare Worker + D1.
 
 - **Key registry** — keys are generated here, stored ONLY as SHA-256
@@ -52,15 +52,15 @@ state machine) lives in the app repo: `docs/LICENSING-ARCHITECTURE.md`.
 ## 2. One-time deployment (do this once, ~10 minutes)
 
 ```bash
-git clone <this-private-repo> diskbytes-license-server
-cd diskbytes-license-server
+git clone <this-private-repo> diskgenie-license-server
+cd diskgenie-license-server
 npm install
 
 # 1. Log in to Cloudflare (opens browser)
 npx wrangler login
 
 # 2. Create the D1 database
-npx wrangler d1 create diskbytes-license
+npx wrangler d1 create diskgenie-license
 #    → copy the printed database_id into wrangler.jsonc (d1_databases[0].database_id)
 
 # 3. Apply the schema to the remote database
@@ -82,12 +82,12 @@ npx wrangler secret put LICENSE_SIGNING_PRIVATE_KEY   # paste the seed from step
 
 # 6. Deploy
 npx wrangler deploy
-#    → note the URL, e.g. https://diskbytes-license.<your-subdomain>.workers.dev
+#    → note the URL, e.g. https://diskgenie-license.<your-subdomain>.workers.dev
 #    (recommended: add a custom domain — see §3)
 #
 #    ⚠️ If every request 404s with "error code: 1042" after a deploy:
 #    the workers.dev route for the Worker is disabled. Fix once in the
-#    dashboard (Workers & Pages → diskbytes-license → Settings →
+#    dashboard (Workers & Pages → diskgenie-license → Settings →
 #    Domains & Routes → enable workers.dev) — and keep
 #    "workers_dev": true in wrangler.jsonc (the repo default) while
 #    serving on the subdomain. Switch it off only in the same deploy
@@ -95,7 +95,7 @@ npx wrangler deploy
 
 # 7. Smoke-test
 curl https://<your-worker-url>/v1/health
-# → {"ok":true,"service":"diskbytes-license",...}
+# → {"ok":true,"service":"diskgenie-license",...}
 ```
 
 ### 3. Custom domain (recommended for a stable license URL)
@@ -108,11 +108,11 @@ Either uncomment the `routes` block in `wrangler.jsonc`:
 
 then `npx wrangler deploy` again (the domain must be on your Cloudflare
 account), or attach the custom domain in the Cloudflare dashboard
-(Workers → diskbytes-license → Settings → Domains & Routes).
+(Workers → diskgenie-license → Settings → Domains & Routes).
 
 ### 4. Point the app at the server
 
-In the app repo (`diskbytes_new`), `src-tauri/src/license.rs`:
+In the app repo (`diskgenie_new`), `src-tauri/src/license.rs`:
 
 ```rust
 const LICENSE_API_BASE: &str = "https://license.yourdomain.com/";  // your URL
@@ -120,7 +120,7 @@ const LICENSE_PUBLIC_KEY_HEX: &str = "<the 32-byte public key hex from step 4>";
 const CLIENT_SECRET_HEX: &str = "<the same hex you set as CLIENT_REQUEST_SECRET>";
 ```
 
-Environment override for testing: `DISKBYTES_LICENSE_API=https://…`
+Environment override for testing: `DISKGENIE_LICENSE_API=https://…`
 (see the app repo docs). Token TTL: keep `TOKEN_TTL_DAYS` (wrangler.jsonc
 vars) in sync with the app's `GRACE_DAYS` (14 by default).
 
@@ -173,10 +173,10 @@ delivered to the customer by email. The standard flow:
      body: JSON.stringify({ tier, customerName: name, customerEmail: email }),
    }).then(r => r.json());
    await resend.emails.send({
-     from: "DiskBytes <keys@yourdomain.com>",
+     from: "DiskGenie <keys@yourdomain.com>",
      to: email,
-     subject: "Your DiskBytes Pro license",
-     text: `Hi ${name}, thank you for purchasing DiskBytes Pro!\n\nYour license key:\n\n${keys[0].key}\n\nActivate it in DiskBytes (License → Activate).`,
+     subject: "Your DiskGenie Pro license",
+     text: `Hi ${name}, thank you for purchasing DiskGenie Pro!\n\nYour license key:\n\n${keys[0].key}\n\nActivate it in DiskGenie (License → Activate).`,
    });
    ```
 
@@ -226,7 +226,7 @@ curl http://127.0.0.1:8787/v1/health
 ```
 
 The seed script prints two dev keys (e.g. `DB-7XK2M-9QF3P-8NR4T-2VW6Y`)
-— use them against `DISKBYTES_LICENSE_API=http://127.0.0.1:8787/` for
+— use them against `DISKGENIE_LICENSE_API=http://127.0.0.1:8787/` for
 local end-to-end testing of the app. To seed REMOTE (staging), set the
 `DATABASE` remote URL and use the admin API instead — never invent rows
 by hand in production.
@@ -289,7 +289,7 @@ every push (`.github/workflows/ci.yml`).
 
 - **Logs:** `npx wrangler tail` — every request logs its outcome
   (observability is enabled in wrangler.jsonc).
-- **Metrics:** Workers dashboard → diskbytes-license; D1 usage in the
+- **Metrics:** Workers dashboard → diskgenie-license; D1 usage in the
   D1 dashboard. `GET /v1/admin/stats` for business counts.
 - **Backups:** D1 → Settings → Export (SQL dump) on a schedule you
   choose; the license table is tiny (hashes + metadata).

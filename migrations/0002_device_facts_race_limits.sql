@@ -1,4 +1,4 @@
--- DiskBytes license server — migration 0002 (v2: device facts, race-safe
+-- DiskGenie license server — migration 0002 (v2: device facts, race-safe
 -- slot binding, rate limiting).
 --
 -- WHAT THIS ADDS (all additive — v1 rows keep working):

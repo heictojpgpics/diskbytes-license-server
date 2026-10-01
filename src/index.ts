@@ -1,5 +1,5 @@
 /**
- * DiskBytes license server — Worker entry (router), v3.
+ * DiskGenie license server — Worker entry (router), v3.
  *
  * App routes (request-HMAC auth, UA pinned):
  *   POST /v1/activate     bind device + mint token (rate-limited)
@@ -43,7 +43,7 @@ export default {
       // any route touches them (per-isolate latch — see src/schema.ts).
       await ensureSchema(env.DB);
       if (request.method === "GET" && path === "/v1/health") {
-        return json(200, { ok: true, service: "diskbytes-license", version: 3, time: Math.floor(Date.now() / 1000) });
+        return json(200, { ok: true, service: "diskgenie-license", version: 3, time: Math.floor(Date.now() / 1000) });
       }
       if (path.startsWith("/v1/admin")) {
         return handleAdmin(env, request, url);

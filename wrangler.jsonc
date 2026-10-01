@@ -1,4 +1,4 @@
-// DiskBytes license server — Cloudflare Worker configuration (wrangler v4).
+// DiskGenie license server — Cloudflare Worker configuration (wrangler v4).
 //
 // Deploy guide + all secrets setup: README.md. The D1 binding below is the
 // ONLY thing to edit per deployment (database_id). Secrets are set with
@@ -8,7 +8,7 @@
 //   CLIENT_REQUEST_SECRET        — 64-hex HMAC shared with the app client
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "diskbytes-license",
+  "name": "diskgenie-license",
   "main": "src/index.ts",
   "compatibility_date": "2025-09-01",
   "compatibility_flags": [],
@@ -19,10 +19,27 @@
   // owner hit exactly this after the first redeploy). Keep true while
   // serving on workers.dev; switch to false only when you move to the
   // custom domain (routes below) in the SAME deploy.
+  //
+  // ⚠️ NAME-CUTOVER (DiskBytes → DiskGenie, 2026-10): the DEPLOYED
+  // worker is still named "diskbytes-license" (still answering at
+  // diskbytes-license.heictojpg-pics.workers.dev — the app points
+  // there today). Deploying THIS config renames the worker, which
+  // moves its URL to diskgenie-license.heictojpg-pics.workers.dev and
+  // KILLS the old hostname. The zero-break cutover sequence:
+  //   1. In the Cloudflare dashboard, attach custom domain
+  //      license.diskgenie.app to the EXISTING diskbytes-license
+  //      worker (the domain is already on the account) — it starts
+  //      answering on BOTH hostnames.
+  //   2. In the APP repo, flip LICENSE_API_BASE
+  //      (src-tauri/src/license.rs) and the two E2E workflow URLs
+  //      to https://license.diskgenie.app — ship that build.
+  //   3. Then deploy this renamed config (the old hostname dies
+  //      after every installed client has the new URL).
   "workers_dev": true,
   "routes": [
-    // Optional: serve on your own domain (recommended for a stable URL):
-    // { "pattern": "license.diskbytes.app", "custom_domain": true }
+    // The stable product-domain URL (step 1 above, then uncomment for
+    // step 3 so the worker serves on license.diskgenie.app):
+    // { "pattern": "license.diskgenie.app", "custom_domain": true }
   ],
   "observability": {
     "enabled": true,
@@ -40,7 +57,7 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "diskbytes-license",
+      "database_name": "diskgenie-license",
       "database_id": "00000000-0000-0000-0000-000000000000"
     }
   ]

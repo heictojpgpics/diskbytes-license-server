@@ -104,7 +104,7 @@ export async function handleActivate(env: Env, request: Request): Promise<Respon
   }
   if (license.expires_at !== null && license.expires_at <= now) {
     await db.audit({ licenseId: license.id, keyLast4: last4, event: "denied", reason: "LICENSE_EXPIRED", platform, ipHash, now });
-    return fail(403, "LICENSE_EXPIRED", "Your yearly license has expired — renew to keep DiskBytes Pro.");
+    return fail(403, "LICENSE_EXPIRED", "Your yearly license has expired — renew to keep DiskGenie Pro.");
   }
 
   // Bind the slot (race-safe: the partial unique index is the

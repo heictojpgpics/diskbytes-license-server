@@ -79,7 +79,7 @@ export async function handleValidate(env: Env, request: Request): Promise<Respon
     return denied(license.status === "revoked" ? "KEY_REVOKED" : "KEY_REFUNDED", "This license key is no longer active.");
   }
   if (license.expires_at !== null && license.expires_at <= now) {
-    return denied("LICENSE_EXPIRED", "Your yearly license has expired — renew to keep DiskBytes Pro.");
+    return denied("LICENSE_EXPIRED", "Your yearly license has expired — renew to keep DiskGenie Pro.");
   }
 
   const device = await db.deviceByLicensePlatformHw(license.id, platform, hw);

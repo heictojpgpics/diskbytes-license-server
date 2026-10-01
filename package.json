@@ -1,9 +1,9 @@
 {
-  "name": "diskbytes-license-server",
+  "name": "diskgenie-license-server",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "DiskBytes licensing backend — Cloudflare Worker + D1: key registry, device binding (1 Windows + 1 macOS per key), Ed25519-signed entitlement tokens, 24 h revalidation, revocation, admin API.",
+  "description": "DiskGenie licensing backend — Cloudflare Worker + D1: key registry, device binding (1 Windows + 1 macOS per key), Ed25519-signed entitlement tokens, 24 h revalidation, revocation, admin API.",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
